@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import uk.co.riera.talkbalance.data.AppDatabase
 import uk.co.riera.talkbalance.ml.SherpaEngines
 
 class TalkBalanceApplication : Application() {
@@ -13,6 +14,8 @@ class TalkBalanceApplication : Application() {
 
     lateinit var sherpaEngines: SherpaEngines
         private set
+
+    val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
 
     override fun onCreate() {
         super.onCreate()
