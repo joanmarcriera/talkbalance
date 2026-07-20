@@ -12,14 +12,10 @@ not a surveillance tool.
 - **No internet permission.** The app declares none — you can verify it yourself under
   Android Settings → Apps → Talk Balance → Permissions. It literally cannot upload
   anything: nothing you say ever leaves the phone.
-- **Fully on-device.** Speaker recognition runs on the phone with neural models
+- **No audio is ever stored.** Speech is processed on the phone in memory
   ([sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): voice-activity detection +
-  speaker embeddings). No cloud, no account, no per-use cost.
-
-> Honesty note (early build): the current v0.1 records the session audio to the app's
-> private storage to analyse it. It never leaves the device, but it is not the final
-> design — the in-progress pipeline processes audio in memory and writes nothing. Until
-> that lands, treat "no audio stored" as a goal, not a shipped guarantee.
+  speaker embeddings) and written nowhere — no recording file (verified on-device by
+  inspecting the app's storage after a session). No cloud, no account, no per-use cost.
 
 ## Install
 
@@ -34,9 +30,10 @@ Or scan the QR / tap "Add to F-Droid" at **https://fdroid.joanmarcriera.es**.
 
 **Direct APK:** download the latest build from the same page. Requires Android 10+.
 
-> **Status: early access (v0.1).** The release pipeline, on-device inference, and
-> privacy architecture are in place. The live-session view and full report are being
-> built in the open — expect rapid iteration.
+> **Status: early access (v0.1.1).** Enrolment, the live session (coloured bars,
+> current-speaker highlight, running leader) and the report all work on-device. It's
+> young and still being tuned for real-world accuracy — built in the open, expect rapid
+> iteration.
 
 ## How it works
 
