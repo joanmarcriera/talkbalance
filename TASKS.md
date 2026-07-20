@@ -18,6 +18,8 @@
   - Completion: unfinished sessions and valid audio files are recovered at launch.
 - [ ] Vendor sherpa-onnx AAR and runtime models (PLAN T2).
   - Completion: on-device log confirms VAD initialization and embedding dimension.
+  - Current: pinned artifacts, checksum manifest, ABI filters, and engine initialization
+    are implemented; connect a phone to capture the required runtime log.
 - [ ] Run the Android model/threshold benchmark gate (PLAN T3).
   - Completion: benchmark findings committed before enrollment/session work.
 

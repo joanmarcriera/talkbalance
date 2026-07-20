@@ -1,5 +1,17 @@
 # Decisions
 
+## 2026-07-20 — ML binaries are pinned ordinary Git blobs
+
+- **Decision:** Commit the vendored AAR and ONNX files directly, with release source
+  and SHA-256 recorded in `app/libs/README.md`.
+- **Alternatives:** Git LFS; download dependencies during every build.
+- **Rationale:** The pinned runtime/model set is about 101 MB and must remain
+  reproducible. Forgejo's authenticated LFS batch endpoint returns 404, while each
+  individual asset remains below 50 MB.
+- **Consequences:** Repository clones transfer the model blobs and are larger.
+- **Revisit when:** Forgejo LFS is enabled, the models move to a trusted immutable
+  package registry, or dynamic delivery is introduced for production.
+
 ## 2026-07-20 — Private Forgejo-primary repository
 
 - **Decision:** Use the private `marc/talkertracker` repository on
