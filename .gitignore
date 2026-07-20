@@ -1,3 +1,12 @@
+.gradle/
+.idea/
+build/
+**/build/
+local.properties
+*.iml
+*.jks
+*.keystore
+outputs/*.apk
 spike/.venv/
 spike/*.onnx
 spike/*.wav
