@@ -13,3 +13,4 @@ spike/*.wav
 spike/*.tar.bz2
 spike/sherpa-onnx-pyannote-segmentation-3-0/
 .claude/
+.kotlin/
