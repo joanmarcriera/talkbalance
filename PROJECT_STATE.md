@@ -32,8 +32,8 @@ The debug app builds and reaches a functional local recording flow. Recording
 has not yet been exercised on physical Android hardware. The earlier cloud plan
 has been superseded by the repository's validated fully on-device architecture.
 Room persistence, guided enrollment, production sherpa-onnx inference, and reports
-remain. T2 compiles and packages successfully but cannot be closed until a connected
-Android device produces the runtime initialization log.
+remain. T2 is complete on the CPH2609; the T3 live model/threshold benchmark is the
+active gate before downstream enrollment and session work.
 
 ## Files changed
 
@@ -49,7 +49,10 @@ Android device produces the runtime initialization log.
 - Packaged-manifest inspection with Android `aapt` confirms microphone,
   notification, and foreground-service permissions only; no Internet permission.
 - Sherpa-enabled APK is 144 MB and packages only `arm64-v8a` and `x86_64` native
-  libraries; runtime device verification is pending because `adb devices` was empty.
+  libraries.
+- `./gradlew installDebug` — passed on Android 16 device `CPH2609`.
+- Clean device launch logged `vad ok, extractor dim=512` for CAM++ with
+  `initMs=999`, proving the v1.13.4 JNI, VAD, and embedding model initialize together.
 - Deliverable APK SHA-256:
   `24a56e9bfc6fc70db4f7c145ecfe7fb6abbeb9caf7ea7c37788bfab6ddcf9214`.
 
@@ -59,8 +62,6 @@ Android device produces the runtime initialization log.
   dinner audio; the Mac spike is positive but not a device benchmark.
 - Foreground recording requires physical-device verification across screen lock,
   pause/resume, interruption, and process termination.
-- No Android device is currently visible to ADB, so the T2 runtime log and T3
-  threshold/model benchmark cannot yet be captured.
 - Forgejo's authenticated Git LFS batch endpoint returns 404, so the approximately
   101 MB pinned model/runtime set must currently be stored as ordinary Git blobs.
 - The `git.lab.riera.co.uk` SSH endpoint is not configured for the existing key;
@@ -68,6 +69,6 @@ Android device produces the runtime initialization log.
 
 ## Next recommended action
 
-Vendor the sherpa-onnx AAR and selected assets, implement the debug benchmark
-screen from `PLAN.md` T2/T3, and run it on a physical Android phone. Room and
+Implement the debug benchmark screen from `PLAN.md` T3 and run CAM++ versus
+ERes2Net score/timing trials on the connected physical Android phone. Room and
 production session work remain gated on that result.
