@@ -23,6 +23,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,6 +37,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import uk.co.riera.talkbalance.BuildConfig
+import uk.co.riera.talkbalance.bench.BenchScreen
 import uk.co.riera.talkbalance.recording.RecordingContract
 import uk.co.riera.talkbalance.recording.RecordingController
 import uk.co.riera.talkbalance.recording.RecordingStatus
@@ -48,8 +51,14 @@ fun TalkBalanceApp() {
         var step by remember { mutableStateOf(SetupStep.GROUP) }
         val participants = remember { mutableStateListOf("", "") }
         var groupName by remember { mutableStateOf("") }
+        var showBench by remember { mutableStateOf(false) }
 
-        Scaffold(topBar = { AppBar() }) { padding ->
+        if (showBench) {
+            BenchScreen(onBack = { showBench = false })
+            return@MaterialTheme
+        }
+
+        Scaffold(topBar = { AppBar(onBench = { showBench = true }) }) { padding ->
             when (step) {
                 SetupStep.GROUP -> GroupSetup(
                     groupName = groupName,
@@ -76,7 +85,15 @@ fun TalkBalanceApp() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppBar() = TopAppBar(title = { Text("Talk Balance") })
+private fun AppBar(onBench: () -> Unit) = TopAppBar(
+    title = { Text("Talk Balance") },
+    actions = {
+        // Debug-only entry point to the T3 benchmark harness.
+        if (BuildConfig.DEBUG) {
+            TextButton(onClick = onBench) { Text("Bench") }
+        }
+    },
+)
 
 @Composable
 private fun GroupSetup(
