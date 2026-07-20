@@ -125,7 +125,7 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Text(
-                            "Lower = stricter matching. Controls speaker recognition accuracy.",
+                            "Higher = stricter matching (fewer false matches). Controls speaker recognition accuracy.",
                             style = MaterialTheme.typography.labelSmall,
                         )
                     }
@@ -137,7 +137,7 @@ fun SettingsScreen(
         SettingCard(title = "Privacy") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "All processing happens on this phone. The app has no Internet permission — verify it yourself in system settings. No audio is ever stored.",
+                    "All processing happens on this phone. The app has no Internet permission — verify it yourself in system settings, so nothing you say can ever leave the device.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }

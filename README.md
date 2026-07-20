@@ -11,11 +11,15 @@ not a surveillance tool.
 
 - **No internet permission.** The app declares none — you can verify it yourself under
   Android Settings → Apps → Talk Balance → Permissions. It literally cannot upload
-  anything.
-- **No recording, no cloud.** Speaker recognition runs on-device with neural models
+  anything: nothing you say ever leaves the phone.
+- **Fully on-device.** Speaker recognition runs on the phone with neural models
   ([sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): voice-activity detection +
-  speaker embeddings). Audio is never written to disk; only anonymous talk-time
-  statistics are kept.
+  speaker embeddings). No cloud, no account, no per-use cost.
+
+> Honesty note (early build): the current v0.1 records the session audio to the app's
+> private storage to analyse it. It never leaves the device, but it is not the final
+> design — the in-progress pipeline processes audio in memory and writes nothing. Until
+> that lands, treat "no audio stored" as a goal, not a shipped guarantee.
 
 ## Install
 
