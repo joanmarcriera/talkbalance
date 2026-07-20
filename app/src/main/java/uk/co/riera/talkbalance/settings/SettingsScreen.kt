@@ -226,7 +226,7 @@ private fun DeleteAllDataDialog(
         title = { Text("Delete all data?") },
         text = {
             Text(
-                "This will permanently delete all recordings, people, and statistics. This action cannot be undone.",
+                "This will permanently delete all people, sessions, statistics, and settings. This action cannot be undone.",
             )
         },
         confirmButton = {

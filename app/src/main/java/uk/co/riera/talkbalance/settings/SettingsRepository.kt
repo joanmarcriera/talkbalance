@@ -69,6 +69,11 @@ class SettingsRepository(context: Context) {
         }
     }
 
+    /** Wipes every stored setting back to defaults. Used by "Delete all data". */
+    suspend fun clearAll() {
+        dataStore.edit { it.clear() }
+    }
+
     companion object {
         @Volatile
         private var INSTANCE: SettingsRepository? = null

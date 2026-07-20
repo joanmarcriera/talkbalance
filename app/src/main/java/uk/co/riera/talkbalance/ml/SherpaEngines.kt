@@ -72,6 +72,27 @@ class SherpaEngines(
         ).also { snapshot = it }
     }
 
+    /**
+     * The app's single initialised [Vad]. Throws if [initialize] has not succeeded yet.
+     *
+     * **Single-threaded contract:** this is the one shared instance the live session pipeline
+     * ([uk.co.riera.talkbalance.session.SessionController]) and enrollment
+     * ([uk.co.riera.talkbalance.enroll.EnrollmentProcessor]) both borrow. sherpa-onnx JNI objects
+     * are not thread-safe, so a borrower must drive it from a single consumer only, and a live
+     * session and an enrollment must never run at the same time (they are separate screens).
+     */
+    fun requireVad(): Vad = vad ?: error("SherpaEngines.initialize() has not completed successfully")
+
+    /**
+     * The app's single initialised [SpeakerEmbeddingExtractor]. Same single-threaded borrowing
+     * contract as [requireVad] — see that doc.
+     */
+    fun requireExtractor(): SpeakerEmbeddingExtractor =
+        extractor ?: error("SherpaEngines.initialize() has not completed successfully")
+
+    /** True once [initialize] has built the native engines. */
+    val isInitialized: Boolean get() = snapshot != null
+
     @Synchronized
     fun close() {
         extractor?.release()
