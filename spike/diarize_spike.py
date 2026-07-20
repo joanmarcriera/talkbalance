@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TalkerTracker day-1 spike (Vikunja task 979).
+"""TalkerTracker day-1 spike (project-tracker task).
 
 Runs sherpa-onnx offline speaker diarization on a multi-speaker WAV and prints
 per-speaker talk time — the core computation the Android app will do on-device.

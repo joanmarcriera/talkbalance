@@ -15,7 +15,7 @@
 ## 2026-07-20 — Private the private Git server-primary repository
 
 - **Decision:** Use the private `marc/talkertracker` repository on
-  `git.lab.riera.co.uk` as `origin`; retain the previous the private Git server URL as the
+  the private Git server as `origin`; retain the previous remote URL as the
   `legacy` remote for provenance.
 - **Alternatives:** Continue using only the previous hostname; create a private
   GitHub repository.
@@ -23,7 +23,7 @@
   and the requested backend while preserving the existing repository history.
 - **Consequences:** Push authentication currently uses the scoped the private Git server API
   token because the new hostname's SSH endpoint does not accept the existing key.
-- **Revisit when:** SSH routing/key registration for `git.lab.riera.co.uk` is fixed
+- **Revisit when:** SSH routing/key registration for the private Git server is fixed
   or an off-site push mirror is required.
 
 ## 2026-07-20 — Android-first closed beta
