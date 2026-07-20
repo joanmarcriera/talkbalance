@@ -24,7 +24,7 @@ android {
         }
     }
 
-    // Release signing is read from the environment (sourced from ~/.tokens) so the keystore and
+    // Release signing is read from the environment (sourced from the shell environment) so the keystore and
     // its password never live in the repo. When the vars are absent (contributors, CI without
     // secrets) the release build is simply left unsigned rather than failing.
     val ksPath = System.getenv("TALKBALANCE_KEYSTORE_PATH")
