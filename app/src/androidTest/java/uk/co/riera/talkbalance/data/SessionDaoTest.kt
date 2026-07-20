@@ -17,13 +17,25 @@ import org.junit.runner.RunWith
 class SessionDaoTest {
     private lateinit var db: AppDatabase
     private lateinit var dao: SessionDao
+    private lateinit var personDao: PersonDao
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).build()
         dao = db.sessionDao()
+        personDao = db.personDao()
     }
+
+    /** Stats referencing a person must point at a real row — the FK is enforced. */
+    private suspend fun insertPerson(): Long = personDao.insert(
+        PersonEntity(
+            name = "Test Person",
+            colorIndex = 0,
+            embeddings = EmbeddingCodec.encode(arrayOf(floatArrayOf(0.1f, 0.2f))),
+            createdAtEpochMs = 0L,
+        ),
+    )
 
     @After
     fun tearDown() {
@@ -32,6 +44,7 @@ class SessionDaoTest {
 
     @Test
     fun insertSessionWithStatsAndRetrieve() = runBlocking {
+        val personId = insertPerson()
         val session = SessionEntity(
             startedAtEpochMs = 1000L,
             endedAtEpochMs = 2000L,
@@ -49,7 +62,7 @@ class SessionDaoTest {
             ),
             SpeakerStatEntity(
                 sessionId = 0,
-                personId = 1L,
+                personId = personId,
                 isEveryoneElse = false,
                 talkMs = 500L,
                 turns = 2,
@@ -90,6 +103,7 @@ class SessionDaoTest {
 
     @Test
     fun getSessionWithStatsReturnsStatsRelation() = runBlocking {
+        val personId = insertPerson()
         val session = SessionEntity(
             startedAtEpochMs = 1000L,
             endedAtEpochMs = 2000L,
@@ -107,7 +121,7 @@ class SessionDaoTest {
             ),
             SpeakerStatEntity(
                 sessionId = 0,
-                personId = 1L,
+                personId = personId,
                 isEveryoneElse = false,
                 talkMs = 500L,
                 turns = 2,
