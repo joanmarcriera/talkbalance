@@ -1,7 +1,7 @@
 # TalkerTracker — implementation plan (delegation-ready)
 
 Status 2026-07-20. Inputs: [README.md](README.md) (spike GO), [RESEARCH.md](RESEARCH.md)
-(what users value). Tracking: Vikunja project 51. Marc has: physical Android phone,
+(what users value). Tracking: the project tracker. Marc has: physical Android phone,
 wants full Android Studio install.
 
 ## Verified integration facts (do not re-research)

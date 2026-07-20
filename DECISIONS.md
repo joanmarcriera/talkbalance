@@ -6,22 +6,22 @@
   and SHA-256 recorded in `app/libs/README.md`.
 - **Alternatives:** Git LFS; download dependencies during every build.
 - **Rationale:** The pinned runtime/model set is about 101 MB and must remain
-  reproducible. Forgejo's authenticated LFS batch endpoint returns 404, while each
+  reproducible. the private Git server's authenticated LFS batch endpoint returns 404, while each
   individual asset remains below 50 MB.
 - **Consequences:** Repository clones transfer the model blobs and are larger.
-- **Revisit when:** Forgejo LFS is enabled, the models move to a trusted immutable
+- **Revisit when:** the private Git server LFS is enabled, the models move to a trusted immutable
   package registry, or dynamic delivery is introduced for production.
 
-## 2026-07-20 — Private Forgejo-primary repository
+## 2026-07-20 — Private the private Git server-primary repository
 
 - **Decision:** Use the private `marc/talkertracker` repository on
-  `git.lab.riera.co.uk` as `origin`; retain the previous Forgejo URL as the
+  `git.lab.riera.co.uk` as `origin`; retain the previous the private Git server URL as the
   `legacy` remote for provenance.
 - **Alternatives:** Continue using only the previous hostname; create a private
   GitHub repository.
 - **Rationale:** This follows the established private-project hosting convention
   and the requested backend while preserving the existing repository history.
-- **Consequences:** Push authentication currently uses the scoped Forgejo API
+- **Consequences:** Push authentication currently uses the scoped the private Git server API
   token because the new hostname's SSH endpoint does not accept the existing key.
 - **Revisit when:** SSH routing/key registration for `git.lab.riera.co.uk` is fixed
   or an off-site push mirror is required.
