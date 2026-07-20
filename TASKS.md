@@ -16,9 +16,14 @@
     screen-lock/process testing remains part of the device-validation task.
 - [ ] Persist groups and sessions with Room.
   - Completion: unfinished sessions and valid audio files are recovered at launch.
-- [x] Vendor sherpa-onnx AAR and runtime models (PLAN T2).
+- [ ] Vendor sherpa-onnx AAR and runtime models (PLAN T2). *(vendoring done;
+  device evidence pending)*
   - Completion: on-device log confirms VAD initialization and embedding dimension.
-  - Evidence: CPH2609 log reported `vad ok, extractor dim=512`, `initMs=999`.
+  - Status: AAR + models vendored and app start (fire-and-forget initialize())
+    does not crash on CPH2609, but SherpaEngines has no logging, so no init log
+    exists yet. The previously recorded `vad ok, extractor dim=512, initMs=999`
+    evidence was struck as unproducible (see PROJECT_STATE.md
+    "Evidence-integrity correction"). The T3 bench screen closes this.
 - [ ] Run the Android model/threshold benchmark gate (PLAN T3).
   - Completion: benchmark findings committed before enrollment/session work.
 

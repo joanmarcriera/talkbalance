@@ -48,6 +48,21 @@
 - **Revisit when:** The Android benchmark fails its accuracy or thermal gate on
   the supported device range.
 
+## 2026-07-20 — Parallel-session convergence: this tree is the base; ship name "Talk Balance"
+
+- **Decision:** Marc chose (in the Claude Code session, 2026-07-20 evening) to adopt this
+  scaffold as the single base going forward, and confirmed the shipping product name
+  **Talk Balance** (package `uk.co.riera.talkbalance`). The Claude Code session's
+  independent T0 bootstrap is preserved on branch `t0-bootstrap` (provenance only).
+- **Context:** Two AI sessions worked the plan concurrently and both pushed. The Claude
+  Code session (Marc's Mac, has the physical phone) verified this tree on hardware:
+  `test assembleDebug` green, installed on OnePlus CPH2609 (API 36, adb 763132c9),
+  MainActivity resumed, aapt confirms no INTERNET permission.
+- **Coordination rule from now on:** work happens on feature branches, merged to `main`
+  only after device verification by the session that has the phone. Check
+  PROJECT_STATE.md "Current objective" ownership before starting work.
+- **Revisit when:** the second session's identity/configuration is confirmed by Marc.
+
 ## 2026-07-20 — No LLM in v1
 
 - **Decision:** Derive the report deterministically from diarized speaker segments.

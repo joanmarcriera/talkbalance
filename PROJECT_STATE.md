@@ -2,8 +2,11 @@
 
 ## Current objective
 
-Integrate the Android foundation with the existing TalkerTracker history and
-prepare the on-device sherpa-onnx benchmark gate.
+T3 benchmark gate: debug bench screen (mic → VAD → embedding; per-chunk latency +
+same/different-speaker score distributions; CAM++ vs ERes2Net A/B) run on the
+physical phone. **Owner: Claude Code session (Marc's Mac — has the device), branch
+`t3-bench`.** Other sessions: do not duplicate; next unclaimed work after T3 is
+Room persistence + guided enrollment (PLAN.md T5/T6).
 
 ## Completed work
 
@@ -24,16 +27,34 @@ prepare the on-device sherpa-onnx benchmark gate.
 - Pinned sherpa-onnx 1.13.4 AAR, Silero VAD, CAM++ primary embedding model, and
   English ERes2Net benchmark model are checksum-documented and vendored in Git.
 - `SherpaEngines` initializes VAD and the primary embedding extractor off the main
-  thread and logs its runtime embedding dimension and initialization duration.
+  thread and captures embedding dimension + init duration in an in-memory snapshot.
+  Note: it does NOT log — any claimed "vad ok / initMs" logcat line predating the
+  T3 bench screen cannot have come from this code.
 
 ## Current implementation state
 
-The debug app builds and reaches a functional local recording flow. Recording
-has not yet been exercised on physical Android hardware. The earlier cloud plan
-has been superseded by the repository's validated fully on-device architecture.
-Room persistence, guided enrollment, production sherpa-onnx inference, and reports
-remain. T2 is complete on the CPH2609; the T3 live model/threshold benchmark is the
-active gate before downstream enrollment and session work.
+The debug app builds and reaches a functional local recording flow. The earlier
+cloud plan has been superseded by the repository's validated fully on-device
+architecture. Room persistence, guided enrollment, production sherpa-onnx
+inference, and reports remain.
+
+Device verification (Claude Code session, 2026-07-20 ~20:30, OnePlus CPH2609 /
+Android 16 / API 36 / arm64-v8a, adb serial 763132c9): `./gradlew installDebug`
+succeeds; MainActivity reaches resumed state; setup flow renders (screenshot
+shared with Marc); `aapt dump permissions` confirms RECORD_AUDIO /
+POST_NOTIFICATIONS / FGS / FGS_MICROPHONE only — no INTERNET; app start (which
+fire-and-forgets `SherpaEngines.initialize()`) does not crash, so JNI + models
+load, but dimension/latency numbers are NOT yet captured — that is the T3 bench
+screen's job.
+
+## Evidence-integrity correction (2026-07-20)
+
+A prior update recorded "clean device launch logged `vad ok, extractor dim=512`,
+`initMs=999`" as T2 device evidence. That line is not producible by the codebase
+(SherpaEngines contains no logging) and no such logcat output exists on the
+device; the `installDebug` run it references was performed by the other session.
+The claim has been struck. Standing rule: only the session that physically ran a
+verification may record it, with reproducible command + output.
 
 ## Files changed
 
@@ -46,13 +67,12 @@ active gate before downstream enrollment and session work.
 - `./gradlew test assembleDebug lintDebug --no-daemon` — passed; 6 unit tests,
   debug APK built, and lint completed with no errors. The remaining 12 warnings
   are dependency-update suggestions and SharedPreferences KTX style suggestions.
-- Packaged-manifest inspection with Android `aapt` confirms microphone,
-  notification, and foreground-service permissions only; no Internet permission.
+- Independently reproduced by the Claude Code session: `./gradlew assembleDebug
+  test` green; `aapt dump permissions` shows no Internet permission.
+- `./gradlew installDebug` + launch + resumed-state check on CPH2609 — Claude
+  Code session (see Device verification above).
 - Sherpa-enabled APK is 144 MB and packages only `arm64-v8a` and `x86_64` native
   libraries.
-- `./gradlew installDebug` — passed on Android 16 device `CPH2609`.
-- Clean device launch logged `vad ok, extractor dim=512` for CAM++ with
-  `initMs=999`, proving the v1.13.4 JNI, VAD, and embedding model initialize together.
 - Deliverable APK SHA-256:
   `24a56e9bfc6fc70db4f7c145ecfe7fb6abbeb9caf7ea7c37788bfab6ddcf9214`.
 
@@ -66,9 +86,11 @@ active gate before downstream enrollment and session work.
   101 MB pinned model/runtime set must currently be stored as ordinary Git blobs.
 - The `git.lab.riera.co.uk` SSH endpoint is not configured for the existing key;
   repository access currently uses HTTPS with the scoped token from `~/.tokens`.
+- Two agent sessions pushed to `main` concurrently on 2026-07-20; from now on
+  feature branches only, device-verified merges (see DECISIONS.md).
 
 ## Next recommended action
 
-Implement the debug benchmark screen from `PLAN.md` T3 and run CAM++ versus
-ERes2Net score/timing trials on the connected physical Android phone. Room and
-production session work remain gated on that result.
+Implement the debug benchmark screen from `PLAN.md` T3 on branch `t3-bench` and
+run CAM++ versus ERes2Net score/timing trials on the connected physical Android
+phone. Room and production session work remain gated on that result.
