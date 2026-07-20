@@ -38,27 +38,50 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import uk.co.riera.talkbalance.BuildConfig
+import uk.co.riera.talkbalance.TalkBalanceApplication
 import uk.co.riera.talkbalance.bench.BenchScreen
 import uk.co.riera.talkbalance.recording.RecordingContract
 import uk.co.riera.talkbalance.recording.RecordingController
 import uk.co.riera.talkbalance.recording.RecordingStatus
+import uk.co.riera.talkbalance.settings.SettingsScreen
+import uk.co.riera.talkbalance.settings.SettingsViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 private enum class SetupStep { GROUP, CONSENT, READY }
 
 @Composable
 fun TalkBalanceApp() {
     MaterialTheme {
+        val context = LocalContext.current
+        val app = context.applicationContext as TalkBalanceApplication
+        val settingsRepository = app.settingsRepository
+        val settingsViewModel: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(settingsRepository))
+
         var step by remember { mutableStateOf(SetupStep.GROUP) }
         val participants = remember { mutableStateListOf("", "") }
         var groupName by remember { mutableStateOf("") }
         var showBench by remember { mutableStateOf(false) }
+        var showSettings by remember { mutableStateOf(false) }
 
         if (showBench) {
             BenchScreen(onBack = { showBench = false })
             return@MaterialTheme
         }
 
-        Scaffold(topBar = { AppBar(onBench = { showBench = true }) }) { padding ->
+        if (showSettings) {
+            SettingsScreen(
+                viewModel = settingsViewModel,
+                onDeleteAllData = {
+                    app.database.personDao().deleteAll()
+                    app.database.sessionDao().deleteAllSessions()
+                    app.database.sessionDao().deleteAllStats()
+                },
+                onBack = { showSettings = false },
+            )
+            return@MaterialTheme
+        }
+
+        Scaffold(topBar = { AppBar(onBench = { showBench = true }, onSettings = { showSettings = true }) }) { padding ->
             when (step) {
                 SetupStep.GROUP -> GroupSetup(
                     groupName = groupName,
@@ -85,9 +108,11 @@ fun TalkBalanceApp() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppBar(onBench: () -> Unit) = TopAppBar(
+private fun AppBar(onBench: () -> Unit, onSettings: () -> Unit) = TopAppBar(
     title = { Text("Talk Balance") },
     actions = {
+        // Settings entry point - visible in all builds
+        TextButton(onClick = onSettings) { Text("⚙") }
         // Debug-only entry point to the T3 benchmark harness.
         if (BuildConfig.DEBUG) {
             TextButton(onClick = onBench) { Text("Bench") }

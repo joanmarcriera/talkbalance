@@ -143,4 +143,72 @@ class SessionDaoTest {
         val withStats = dao.getSessionWithStats(999L)
         assertNull(withStats)
     }
+
+    @Test
+    fun deleteAllSessionsRemovesAllSessions() = runBlocking {
+        val session1 = SessionEntity(
+            startedAtEpochMs = 1000L,
+            endedAtEpochMs = 2000L,
+            mode = "table",
+            durationMs = 1000L,
+        )
+        val session2 = SessionEntity(
+            startedAtEpochMs = 3000L,
+            endedAtEpochMs = 4000L,
+            mode = "me",
+            durationMs = 1000L,
+        )
+
+        dao.insertSessionWithStats(session1, emptyList())
+        dao.insertSessionWithStats(session2, emptyList())
+
+        val beforeDelete = dao.observeSessionsNewestFirst().first()
+        assertEquals(2, beforeDelete.size)
+
+        dao.deleteAllSessions()
+
+        val afterDelete = dao.observeSessionsNewestFirst().first()
+        assertEquals(0, afterDelete.size)
+    }
+
+    @Test
+    fun deleteAllStatsRemovesAllStats() = runBlocking {
+        val personId = insertPerson()
+        val session = SessionEntity(
+            startedAtEpochMs = 1000L,
+            endedAtEpochMs = 2000L,
+            mode = "table",
+            durationMs = 1000L,
+        )
+        val stats = listOf(
+            SpeakerStatEntity(
+                sessionId = 0,
+                personId = null,
+                isEveryoneElse = true,
+                talkMs = 500L,
+                turns = 2,
+                longestMonologueMs = 300L,
+            ),
+            SpeakerStatEntity(
+                sessionId = 0,
+                personId = personId,
+                isEveryoneElse = false,
+                talkMs = 500L,
+                turns = 2,
+                longestMonologueMs = 300L,
+            ),
+        )
+
+        dao.insertSessionWithStats(session, stats)
+
+        val sessions = dao.observeSessionsNewestFirst().first()
+        val sessionId = sessions[0].id
+        val withStats = dao.getSessionWithStats(sessionId)
+        assertEquals(2, withStats?.stats?.size)
+
+        dao.deleteAllStats()
+
+        val afterDelete = dao.getSessionWithStats(sessionId)
+        assertEquals(0, afterDelete?.stats?.size ?: 0)
+    }
 }

@@ -8,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import uk.co.riera.talkbalance.data.AppDatabase
 import uk.co.riera.talkbalance.ml.SherpaEngines
+import uk.co.riera.talkbalance.settings.SettingsRepository
 
 class TalkBalanceApplication : Application() {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -16,6 +17,7 @@ class TalkBalanceApplication : Application() {
         private set
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
+    val settingsRepository: SettingsRepository by lazy { SettingsRepository.getInstance(this) }
 
     override fun onCreate() {
         super.onCreate()

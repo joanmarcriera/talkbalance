@@ -31,4 +31,10 @@ interface SessionDao {
     @Transaction
     @Query("SELECT * FROM sessions WHERE id = :id")
     suspend fun getSessionWithStats(id: Long): SessionWithStats?
+
+    @Query("DELETE FROM sessions")
+    suspend fun deleteAllSessions()
+
+    @Query("DELETE FROM speaker_stats")
+    suspend fun deleteAllStats()
 }

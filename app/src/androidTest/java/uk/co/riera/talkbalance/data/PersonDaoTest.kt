@@ -113,4 +113,34 @@ class PersonDaoTest {
         val retrieved = dao.getById(999L)
         assertNull(retrieved)
     }
+
+    @Test
+    fun deleteAllRemovesAllPersons() = runBlocking {
+        val embeddings1 = EmbeddingCodec.encode(arrayOf(floatArrayOf(0.1f)))
+        val embeddings2 = EmbeddingCodec.encode(arrayOf(floatArrayOf(0.2f)))
+
+        val person1 = PersonEntity(
+            name = "Alice",
+            colorIndex = 0,
+            embeddings = embeddings1,
+            createdAtEpochMs = 1000L,
+        )
+        val person2 = PersonEntity(
+            name = "Bob",
+            colorIndex = 1,
+            embeddings = embeddings2,
+            createdAtEpochMs = 2000L,
+        )
+
+        dao.insert(person1)
+        dao.insert(person2)
+
+        val beforeDelete = dao.observeAll().first()
+        assertEquals(2, beforeDelete.size)
+
+        dao.deleteAll()
+
+        val afterDelete = dao.observeAll().first()
+        assertEquals(0, afterDelete.size)
+    }
 }

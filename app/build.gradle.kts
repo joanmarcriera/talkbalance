@@ -24,6 +24,25 @@ android {
         }
     }
 
+    // Release signing is read from the environment (sourced from ~/.tokens) so the keystore and
+    // its password never live in the repo. When the vars are absent (contributors, CI without
+    // secrets) the release build is simply left unsigned rather than failing.
+    val ksPath = System.getenv("TALKBALANCE_KEYSTORE_PATH")
+    val ksPassword = System.getenv("TALKBALANCE_KEYSTORE_PASSWORD")
+    val keyAlias = System.getenv("TALKBALANCE_KEY_ALIAS")
+    val hasSigning = ksPath != null && ksPassword != null && keyAlias != null
+
+    signingConfigs {
+        if (hasSigning) {
+            create("release") {
+                storeFile = file(ksPath!!)
+                storePassword = ksPassword
+                this.keyAlias = keyAlias
+                keyPassword = ksPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -31,6 +50,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (hasSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -62,6 +84,8 @@ dependencies {
     implementation("androidx.room:room-runtime:2.7.1")
     implementation("androidx.room:room-ktx:2.7.1")
     ksp("androidx.room:room-compiler:2.7.1")
+
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation(platform("androidx.compose:compose-bom:2025.05.01"))

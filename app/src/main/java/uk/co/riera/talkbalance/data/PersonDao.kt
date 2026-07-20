@@ -23,4 +23,7 @@ interface PersonDao {
 
     @Query("SELECT * FROM persons WHERE id = :id")
     suspend fun getById(id: Long): PersonEntity?
+
+    @Query("DELETE FROM persons")
+    suspend fun deleteAll()
 }
