@@ -37,6 +37,20 @@ class TalkBalanceApplication : Application() {
         }
     }
 
+    /**
+     * "Delete all data": clears every persistent store the app owns — Room (people, sessions,
+     * per-speaker stats), the DataStore settings, and every file under `filesDir` (the T3 bench CSV
+     * and any legacy `recordings/` — no audio is written any more). Idempotent; failures on
+     * individual files are swallowed so one locked file never blocks the wipe.
+     */
+    suspend fun deleteAllData() {
+        database.personDao().deleteAll()
+        database.sessionDao().deleteAllSessions() // CASCADE removes speaker_stats
+        database.sessionDao().deleteAllStats()    // belt-and-braces for any orphan rows
+        settingsRepository.clearAll()
+        filesDir.listFiles()?.forEach { it.deleteRecursively() }
+    }
+
     companion object {
         private const val TAG = "TalkBalanceSherpa"
     }

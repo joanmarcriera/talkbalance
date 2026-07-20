@@ -4,62 +4,93 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import uk.co.riera.talkbalance.BuildConfig
 import uk.co.riera.talkbalance.TalkBalanceApplication
 import uk.co.riera.talkbalance.bench.BenchScreen
-import uk.co.riera.talkbalance.recording.RecordingContract
-import uk.co.riera.talkbalance.recording.RecordingController
-import uk.co.riera.talkbalance.recording.RecordingStatus
+import uk.co.riera.talkbalance.data.PersonEntity
+import uk.co.riera.talkbalance.session.Mode
+import uk.co.riera.talkbalance.session.SessionResult
+import uk.co.riera.talkbalance.session.SessionStats
 import uk.co.riera.talkbalance.settings.SettingsScreen
 import uk.co.riera.talkbalance.settings.SettingsViewModel
-import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlin.math.roundToInt
 
-private enum class SetupStep { GROUP, CONSENT, READY }
+/** Top-level navigation state for the real session flow. */
+private sealed interface Screen {
+    data object Home : Screen
+
+    /** [nonce] makes the enrollment ViewModel unique per entry (see [TalkBalanceApp]). */
+    data class Enroll(val nonce: Int) : Screen
+
+    /** [nonce] makes the session ViewModel unique per entry, so each Start gets a fresh pipeline. */
+    data class Session(val mode: Mode, val mePersonId: Long?, val nonce: Int) : Screen
+    data class Report(
+        val result: SessionResult,
+        val meta: Map<String, SessionViewModel.SpeakerMeta>,
+    ) : Screen
+}
 
 @Composable
 fun TalkBalanceApp() {
     MaterialTheme {
         val context = LocalContext.current
         val app = context.applicationContext as TalkBalanceApplication
-        val settingsRepository = app.settingsRepository
-        val settingsViewModel: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(settingsRepository))
+        val settingsViewModel: SettingsViewModel =
+            viewModel(factory = SettingsViewModel.factory(app.settingsRepository))
 
-        var step by remember { mutableStateOf(SetupStep.GROUP) }
-        val participants = remember { mutableStateListOf("", "") }
-        var groupName by remember { mutableStateOf("") }
+        var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+        var navNonce by remember { mutableStateOf(0) }
         var showBench by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
 
@@ -67,39 +98,45 @@ fun TalkBalanceApp() {
             BenchScreen(onBack = { showBench = false })
             return@MaterialTheme
         }
-
         if (showSettings) {
             SettingsScreen(
                 viewModel = settingsViewModel,
-                onDeleteAllData = {
-                    app.database.personDao().deleteAll()
-                    app.database.sessionDao().deleteAllSessions()
-                    app.database.sessionDao().deleteAllStats()
-                },
+                onDeleteAllData = { app.deleteAllData() },
                 onBack = { showSettings = false },
             )
             return@MaterialTheme
         }
 
-        Scaffold(topBar = { AppBar(onBench = { showBench = true }, onSettings = { showSettings = true }) }) { padding ->
-            when (step) {
-                SetupStep.GROUP -> GroupSetup(
-                    groupName = groupName,
-                    onGroupNameChange = { groupName = it },
-                    participants = participants,
-                    onContinue = { step = SetupStep.CONSENT },
-                    modifier = Modifier.padding(padding),
+        Scaffold(
+            topBar = {
+                AppBar(onBench = { showBench = true }, onSettings = { showSettings = true })
+            },
+        ) { padding ->
+            val content = Modifier.padding(padding)
+            when (val s = screen) {
+                Screen.Home -> HomeScreen(
+                    modifier = content,
+                    onAddPerson = { screen = Screen.Enroll(++navNonce) },
+                    onStart = { mode, meId -> screen = Screen.Session(mode, meId, ++navNonce) },
                 )
-                SetupStep.CONSENT -> ConsentScreen(
-                    onBack = { step = SetupStep.GROUP },
-                    onContinue = { step = SetupStep.READY },
-                    modifier = Modifier.padding(padding),
+                is Screen.Enroll -> EnrollScreen(
+                    modifier = content,
+                    nonce = s.nonce,
+                    onDone = { screen = Screen.Home },
                 )
-                SetupStep.READY -> ReadyScreen(
-                    groupName = groupName.ifBlank { "This table" },
-                    participants = participants.filter { it.isNotBlank() },
-                    onBack = { step = SetupStep.CONSENT },
-                    modifier = Modifier.padding(padding),
+                is Screen.Session -> SessionScreen(
+                    modifier = content,
+                    mode = s.mode,
+                    mePersonId = s.mePersonId,
+                    nonce = s.nonce,
+                    onFinished = { result, meta -> screen = Screen.Report(result, meta) },
+                    onAbort = { screen = Screen.Home },
+                )
+                is Screen.Report -> ReportScreen(
+                    modifier = content,
+                    result = s.result,
+                    meta = s.meta,
+                    onDone = { screen = Screen.Home },
                 )
             }
         }
@@ -111,97 +148,262 @@ fun TalkBalanceApp() {
 private fun AppBar(onBench: () -> Unit, onSettings: () -> Unit) = TopAppBar(
     title = { Text("Talk Balance") },
     actions = {
-        // Settings entry point - visible in all builds
         TextButton(onClick = onSettings) { Text("⚙") }
-        // Debug-only entry point to the T3 benchmark harness.
         if (BuildConfig.DEBUG) {
             TextButton(onClick = onBench) { Text("Bench") }
         }
     },
 )
 
+// --- Home -----------------------------------------------------------------------------------------
+
 @Composable
-private fun GroupSetup(
-    groupName: String,
-    onGroupNameChange: (String) -> Unit,
-    participants: MutableList<String>,
-    onContinue: () -> Unit,
+private fun HomeScreen(
     modifier: Modifier = Modifier,
+    onAddPerson: () -> Unit,
+    onStart: (Mode, Long?) -> Unit,
 ) {
+    val context = LocalContext.current
+    val app = context.applicationContext as TalkBalanceApplication
+    val people by app.database.personDao().observeAll().collectAsStateWithLifecycle(emptyList())
+
+    var mode by remember { mutableStateOf(Mode.TABLE) }
+    var meId by remember { mutableStateOf<Long?>(null) }
+
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Who is at the table?", style = MaterialTheme.typography.headlineMedium)
-        Text("Add two to six people. Names stay on this phone.")
-        OutlinedTextField(
-            value = groupName,
-            onValueChange = onGroupNameChange,
-            label = { Text("Group name (optional)") },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        participants.forEachIndexed { index, value ->
-            OutlinedTextField(
-                value = value,
-                onValueChange = { participants[index] = it },
-                label = { Text("Participant ${index + 1}") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(
-                enabled = participants.size < 6,
-                onClick = { participants.add("") },
-            ) { Text("Add person") }
-            OutlinedButton(
-                enabled = participants.size > 2,
-                onClick = { participants.removeAt(participants.lastIndex) },
-            ) { Text("Remove") }
-        }
-        Button(
-            enabled = participants.size in 2..6 && participants.all { it.trim().isNotEmpty() } &&
-                participants.map { it.trim().lowercase() }.distinct().size == participants.size,
-            onClick = onContinue,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Continue") }
-    }
-}
+        Text("Talk Balance", style = MaterialTheme.typography.headlineMedium)
+        Text("Everything stays on this phone. No audio is ever saved.")
 
-@Composable
-private fun ConsentScreen(onBack: () -> Unit, onContinue: () -> Unit, modifier: Modifier = Modifier) {
-    var agreed by remember { mutableStateOf(false) }
-    Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        Text("Everyone must agree", style = MaterialTheme.typography.headlineMedium)
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Talk Balance records this conversation and analyses speakers entirely on this phone.")
-                Text("Audio and names never leave the device. Only aggregate statistics are retained.")
-                Text("Anyone can ask to stop or delete the recording at any time.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = mode == Mode.TABLE, onClick = { mode = Mode.TABLE }, label = { Text("Table") })
+            FilterChip(selected = mode == Mode.ME, onClick = { mode = Mode.ME }, label = { Text("Me") })
+        }
+
+        Text(
+            when (mode) {
+                Mode.TABLE -> "Everyone enrolled is tracked; unknown voices are “Everyone else”."
+                Mode.ME -> "Pick who you are — you’ll see You vs everyone else."
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        if (people.isEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Text("No one enrolled yet. Add a person to start.", Modifier.padding(20.dp))
+            }
+        } else {
+            people.forEach { person ->
+                PersonRow(
+                    person = person,
+                    selectable = mode == Mode.ME,
+                    selected = meId == person.id,
+                    onSelect = { meId = person.id },
+                )
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = agreed, onCheckedChange = { agreed = it })
-            Text("Everyone present has agreed to be recorded.")
+
+        OutlinedButton(onClick = onAddPerson, modifier = Modifier.fillMaxWidth()) {
+            Text("Add person")
         }
-        Spacer(Modifier.weight(1f))
-        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
-        Button(enabled = agreed, onClick = onContinue, modifier = Modifier.fillMaxWidth()) {
-            Text("Start voice check")
+
+        Spacer(Modifier.height(8.dp))
+
+        val canStart = when (mode) {
+            Mode.TABLE -> people.isNotEmpty()
+            Mode.ME -> meId != null
         }
+        Button(
+            enabled = canStart,
+            onClick = { onStart(mode, if (mode == Mode.ME) meId else null) },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+        ) { Text("Start", style = MaterialTheme.typography.titleMedium) }
     }
 }
 
 @Composable
-private fun ReadyScreen(
-    groupName: String,
-    participants: List<String>,
-    onBack: () -> Unit,
+private fun PersonRow(
+    person: PersonEntity,
+    selectable: Boolean,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable(enabled = selectable) { onSelect() }.padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.size(20.dp).clip(CircleShape).background(colorForIndex(person.colorIndex)))
+        Text(person.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        if (selectable) RadioButton(selected = selected, onClick = onSelect)
+    }
+}
+
+// --- Enrollment -----------------------------------------------------------------------------------
+
+@Composable
+private fun EnrollScreen(modifier: Modifier = Modifier, nonce: Int, onDone: () -> Unit) {
+    val context = LocalContext.current
+    val app = context.applicationContext as TalkBalanceApplication
+    val vm: EnrollViewModel = viewModel(
+        key = "enroll-$nonce",
+        factory = EnrollViewModel.factory(app.sherpaEngines, app.database.personDao()),
+    )
+    val state by vm.state.collectAsStateWithLifecycle()
+
+    var name by remember { mutableStateOf("") }
+    var colorIndex by remember { mutableStateOf(0) }
+    var permissionDenied by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) { permissionDenied = false; vm.record(name, colorIndex) } else permissionDenied = true
+    }
+
+    fun startRecording() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) vm.record(name, colorIndex) else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+        Text("Add a person", style = MaterialTheme.typography.headlineMedium)
+
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Name") },
+            singleLine = true,
+            enabled = state !is EnrollViewModel.State.Recording && state !is EnrollViewModel.State.Processing,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Text("Pick a colour")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            SpeakerPalette.forEachIndexed { index, color ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(color)
+                        .border(
+                            width = if (colorIndex == index) 3.dp else 0.dp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            shape = RoundedCornerShape(8.dp),
+                        )
+                        .clickable { colorIndex = index },
+                )
+            }
+        }
+
+        when (val s = state) {
+            EnrollViewModel.State.Idle -> {
+                if (permissionDenied) {
+                    Text("Microphone permission is required.", color = MaterialTheme.colorScheme.error)
+                }
+                Button(
+                    enabled = name.trim().isNotEmpty(),
+                    onClick = { startRecording() },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                ) { Text("Record ~10 seconds") }
+            }
+            is EnrollViewModel.State.Recording -> {
+                val remaining = ((EnrollViewModel.RECORD_MS - s.elapsedMs) / 1000).coerceAtLeast(0)
+                Text("Listening… keep talking ($remaining s)", style = MaterialTheme.typography.titleMedium)
+                MicLevel(level = s.level)
+                LinearProgressIndicator(
+                    progress = { (s.elapsedMs.toFloat() / EnrollViewModel.RECORD_MS).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            EnrollViewModel.State.Processing -> {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    Text("Building voice profile…")
+                }
+            }
+            is EnrollViewModel.State.Success -> {
+                Text("Added ${s.name}.", style = MaterialTheme.typography.titleMedium)
+                s.warning?.let {
+                    Card(Modifier.fillMaxWidth()) {
+                        Text(
+                            "${it.message}. They may be confused during a session.",
+                            Modifier.padding(16.dp),
+                        )
+                    }
+                }
+                Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+                OutlinedButton(
+                    onClick = { name = ""; vm.reset() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Add another") }
+            }
+            is EnrollViewModel.State.Failure -> {
+                Text(s.message, color = MaterialTheme.colorScheme.error)
+                Button(onClick = { vm.reset(); startRecording() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Try again")
+                }
+            }
+        }
+
+        OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Back") }
+    }
+}
+
+@Composable
+private fun MicLevel(level: Float) {
+    val animated by animateFloatAsState(targetValue = level, label = "mic-level")
+    Box(
+        Modifier.fillMaxWidth().height(20.dp).clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Box(
+            Modifier.fillMaxHeight().fillMaxWidth(animated).clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.primary),
+        )
+    }
+}
+
+// --- Session --------------------------------------------------------------------------------------
+
+@Composable
+private fun SessionScreen(
     modifier: Modifier = Modifier,
+    mode: Mode,
+    mePersonId: Long?,
+    nonce: Int,
+    onFinished: (SessionResult, Map<String, SessionViewModel.SpeakerMeta>) -> Unit,
+    onAbort: () -> Unit,
 ) {
     val context = LocalContext.current
-    val recordingStatus by RecordingController.status.collectAsStateWithLifecycle()
-    var permissionError by remember { mutableStateOf(false) }
+    val app = context.applicationContext as TalkBalanceApplication
+    val vm: SessionViewModel = viewModel(
+        key = "session-$nonce",
+        factory = SessionViewModel.factory(
+            app.sherpaEngines, app.database.personDao(), app.database.sessionDao(), app.settingsRepository,
+        ),
+    )
+
+    // Keep the screen awake for the whole session.
+    val view = LocalView.current
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
+
+    val phase by vm.phase.collectAsStateWithLifecycle()
+    val live by vm.live.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
+
+    // Request permissions, then start, exactly once.
+    var requested by remember { mutableStateOf(false) }
     val permissions = buildList {
         add(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -209,66 +411,160 @@ private fun ReadyScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
-        if (result[Manifest.permission.RECORD_AUDIO] == true) {
-            permissionError = false
-            ContextCompat.startForegroundService(
-                context,
-                RecordingContract.intent(context, RecordingContract.ACTION_START),
-            )
-        } else permissionError = true
+        if (result[Manifest.permission.RECORD_AUDIO] == true) vm.start(mode, mePersonId)
+        else onAbort()
     }
-    Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        Text("Ready to record", style = MaterialTheme.typography.headlineMedium)
-        Text(groupName, style = MaterialTheme.typography.titleLarge)
-        Text("Each person will speak for five seconds, followed by a two-second gap.")
-        participants.forEachIndexed { index, name -> Text("${index + 1}. $name") }
-        Spacer(Modifier.height(8.dp))
-        RecordingStatusCard(recordingStatus)
-        if (permissionError) Text("Microphone permission is required to record.", color = MaterialTheme.colorScheme.error)
-        Spacer(Modifier.weight(1f))
-        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
-        when (recordingStatus) {
-            RecordingStatus.Idle, is RecordingStatus.Failed, is RecordingStatus.Finished ->
-                Button(onClick = { permissionLauncher.launch(permissions) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Start recording")
-                }
-            is RecordingStatus.Recording -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(
-                    onClick = { context.startService(RecordingContract.intent(context, RecordingContract.ACTION_PAUSE)) },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Pause") }
-                Button(
-                    onClick = { context.startService(RecordingContract.intent(context, RecordingContract.ACTION_FINISH)) },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Finish") }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (!requested) {
+            requested = true
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) vm.start(mode, mePersonId) else permissionLauncher.launch(permissions)
+        }
+    }
+
+    // Hand the finished result up to nav.
+    androidx.compose.runtime.LaunchedEffect(phase) {
+        (phase as? SessionViewModel.Phase.Finished)?.let { onFinished(it.result, vm.metaBySpeakerId) }
+    }
+
+    Column(
+        modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        when (val p = phase) {
+            is SessionViewModel.Phase.Failed -> {
+                Text(p.message, color = MaterialTheme.colorScheme.error)
+                OutlinedButton(onClick = onAbort, modifier = Modifier.fillMaxWidth()) { Text("Back") }
             }
-            is RecordingStatus.Paused -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(
-                    onClick = { context.startService(RecordingContract.intent(context, RecordingContract.ACTION_RESUME)) },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Resume") }
+            else -> {
+                val leader = live.speakers.firstOrNull()
+                Text(
+                    "Leading: ${leader?.label ?: "—"} · ${((leader?.share ?: 0.0) * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val speaking = live.isSpeechActive
+                    Box(
+                        Modifier.size(12.dp).clip(CircleShape)
+                            .background(if (speaking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+                    )
+                    Text(
+                        if (speaking) "Someone is speaking" else "Listening…",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(formatDuration(live.elapsedMs), style = MaterialTheme.typography.titleMedium)
+                }
+
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (live.speakers.isEmpty()) {
+                        Text("Waiting for the first voices…", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    live.speakers.forEachIndexed { index, share ->
+                        val color = if (share.isEveryoneElse) EveryoneElseColor
+                        else vm.metaBySpeakerId[share.speakerId]?.let { colorForIndex(it.colorIndex) }
+                            ?: EveryoneElseColor
+                        val glow = live.isSpeechActive && index == 0 && !share.isEveryoneElse
+                        SpeakerBar(share.label, share.share, color, glow)
+                    }
+                }
+
                 Button(
-                    onClick = { context.startService(RecordingContract.intent(context, RecordingContract.ACTION_FINISH)) },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Finish") }
+                    onClick = { vm.stop() },
+                    enabled = phase is SessionViewModel.Phase.Running,
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                ) { Text("Stop", style = MaterialTheme.typography.titleMedium) }
             }
         }
     }
 }
 
 @Composable
-private fun RecordingStatusCard(status: RecordingStatus) {
-    val message = when (status) {
-        RecordingStatus.Idle -> "The phone will keep recording when the screen is locked."
-        is RecordingStatus.Recording -> "Recording • ${formatDuration(status.elapsedMs)}"
-        is RecordingStatus.Paused -> "Paused • ${formatDuration(status.elapsedMs)}"
-        is RecordingStatus.Finished -> "Saved locally • ${formatDuration(status.result.durationMs)}\nSHA-256 verified."
-        is RecordingStatus.Failed -> "${status.message} (${status.code})"
+private fun SpeakerBar(label: String, share: Double, color: Color, glow: Boolean) {
+    val width by animateFloatAsState(targetValue = share.toFloat().coerceIn(0f, 1f), label = "bar-$label")
+    val borderColor by animateColorAsState(
+        targetValue = if (glow) color else Color.Transparent, label = "glow-$label",
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            Text(label, fontWeight = if (glow) FontWeight.Bold else FontWeight.Normal)
+            Text("${(share * 100).roundToInt()}%")
+        }
+        Box(
+            Modifier.fillMaxWidth().height(28.dp).clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .border(if (glow) 3.dp else 0.dp, borderColor, RoundedCornerShape(14.dp)),
+        ) {
+            Box(
+                Modifier.fillMaxHeight().fillMaxWidth(width.coerceAtLeast(0.02f))
+                    .clip(RoundedCornerShape(14.dp)).background(color),
+            )
+        }
     }
-    Card(Modifier.fillMaxWidth()) { Text(message, Modifier.padding(20.dp)) }
 }
 
+// --- Report ---------------------------------------------------------------------------------------
+
+@Composable
+private fun ReportScreen(
+    modifier: Modifier = Modifier,
+    result: SessionResult,
+    meta: Map<String, SessionViewModel.SpeakerMeta>,
+    onDone: () -> Unit,
+) {
+    val total = result.speakers.sumOf { it.talkMs }.coerceAtLeast(1)
+    val rows = result.speakers.sortedByDescending { it.talkMs }
+    val everyoneElseLabel = result.mode.everyoneElseLabel
+    val enrolledCount = meta.size.coerceAtLeast(1)
+
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text("Report", style = MaterialTheme.typography.headlineMedium)
+        Text("Talked for ${formatDuration(result.durationMs)}")
+        Text(
+            "Balanced would be about ${(100.0 / enrolledCount).roundToInt()}% each.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        rows.forEach { stat ->
+            val isEE = stat.speakerId == SessionStats.EVERYONE_ELSE
+            val label = if (isEE) everyoneElseLabel else meta[stat.speakerId]?.name ?: stat.speakerId
+            val color = if (isEE) EveryoneElseColor
+            else meta[stat.speakerId]?.let { colorForIndex(it.colorIndex) } ?: EveryoneElseColor
+            val share = stat.talkMs.toDouble() / total
+
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SpeakerBar(label, share, color, glow = false)
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Text("${formatDuration(stat.talkMs)} talk", style = MaterialTheme.typography.bodySmall)
+                        Text("${stat.turns} turns", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "longest ${formatDuration(stat.longestMonologueMs)}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = onDone, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Done") }
+    }
+}
+
+// --- helpers --------------------------------------------------------------------------------------
+
 private fun formatDuration(value: Long): String {
-    val seconds = value / 1_000
+    val seconds = (value / 1_000).coerceAtLeast(0)
     return "%02d:%02d".format(seconds / 60, seconds % 60)
 }
