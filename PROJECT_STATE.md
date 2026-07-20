@@ -10,6 +10,9 @@ prepare the on-device sherpa-onnx benchmark gate.
 - Product and implementation plan agreed.
 - Existing TalkerTracker research, implementation plan, and diarization spike
   discovered and preserved as the authoritative product history.
+- Private Forgejo repository configured at
+  `https://git.lab.riera.co.uk/marc/talkertracker.git`; `main` tracks
+  `origin/main` and the complete four-commit history has been pushed.
 - Android API 36 command-line toolchain installed locally.
 - Buildable Kotlin/Compose application and project-local Gradle wrapper created.
 - Two-to-six participant setup and explicit consent flow implemented.
@@ -48,8 +51,8 @@ Room persistence, guided enrollment, sherpa-onnx inference, and reports remain.
   dinner audio; the Mac spike is positive but not a device benchmark.
 - Foreground recording requires physical-device verification across screen lock,
   pause/resume, interruption, and process termination.
-- The requested new Forgejo host currently has no authorised SSH key or signed-in
-  browser session, so remote creation/push requires authentication.
+- The `git.lab.riera.co.uk` SSH endpoint is not configured for the existing key;
+  repository access currently uses HTTPS with the scoped token from `~/.tokens`.
 
 ## Next recommended action
 

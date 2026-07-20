@@ -1,5 +1,19 @@
 # Decisions
 
+## 2026-07-20 — Private Forgejo-primary repository
+
+- **Decision:** Use the private `marc/talkertracker` repository on
+  `git.lab.riera.co.uk` as `origin`; retain the previous Forgejo URL as the
+  `legacy` remote for provenance.
+- **Alternatives:** Continue using only the previous hostname; create a private
+  GitHub repository.
+- **Rationale:** This follows the established private-project hosting convention
+  and the requested backend while preserving the existing repository history.
+- **Consequences:** Push authentication currently uses the scoped Forgejo API
+  token because the new hostname's SSH endpoint does not accept the existing key.
+- **Revisit when:** SSH routing/key registration for `git.lab.riera.co.uk` is fixed
+  or an off-site push mirror is required.
+
 ## 2026-07-20 — Android-first closed beta
 
 - **Decision:** Build a native Kotlin/Compose Android application targeting API 36.
