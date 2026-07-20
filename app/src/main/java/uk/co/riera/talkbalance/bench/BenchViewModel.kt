@@ -203,6 +203,7 @@ class BenchViewModel(application: Application) : AndroidViewModel(application) {
         val initMs = (System.nanoTime() - startNs) / 1_000_000
         val line = formatBenchInit(model.file, extractor.dim(), initMs)
         Log.i(TAG, line)
+        appendToBenchFile(line)
         _state.update { it.copy(initLine = line) }
         return extractor
     }
@@ -218,10 +219,23 @@ class BenchViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun emit(line: String) {
         Log.i(TAG, line)
+        appendToBenchFile(line)
         _state.update { current ->
             val next = (current.lines + line).takeLast(MAX_LINES)
             current.copy(lines = next)
         }
+    }
+
+    /**
+     * Measurements must survive process death and logcat rolling (a ~5 min session already
+     * outlives this device's main log buffer). Pull with:
+     * adb exec-out run-as uk.co.riera.talkbalance cat files/bench-t3.csv
+     */
+    private fun appendToBenchFile(line: String) {
+        runCatching {
+            java.io.File(getApplication<Application>().filesDir, BENCH_FILE)
+                .appendText(line + "\n")
+        }.onFailure { Log.e(TAG, "bench file write failed", it) }
     }
 
     companion object {
@@ -234,5 +248,6 @@ class BenchViewModel(application: Application) : AndroidViewModel(application) {
         private const val REF_SAMPLES = SAMPLE_RATE * 8 // ~8 s reference capture
         private const val MAX_LINES = 200
         private const val VAD_MODEL = "silero_vad.onnx"
+        private const val BENCH_FILE = "bench-t3.csv"
     }
 }
