@@ -2,11 +2,15 @@
 
 ## Current objective
 
-T3 benchmark gate: debug bench screen (mic → VAD → embedding; per-chunk latency +
-same/different-speaker score distributions; CAM++ vs ERes2Net A/B) run on the
-physical phone. **Owner: Claude Code session (Marc's Mac — has the device), branch
-`t3-bench`.** Other sessions: do not duplicate; next unclaimed work after T3 is
-Room persistence + guided enrollment (PLAN.md T5/T6).
+T3 benchmark gate — harness DONE and merged (commit 91c3e9f); awaiting the
+measurement session: Marc + 1–2 family members at the Bench screen (capture refs
+A/B/C, converse ~5 min, both models) to produce same/different-speaker score
+distributions and pick model + threshold. Analysis then closes T3 and unblocks
+T5/T6 (enrollment + Room).
+
+Note 2026-07-20 ~20:50: Marc identified and stopped the second agent session;
+the Claude Code session is now the sole agent on this repository. The
+feature-branch + device-verified-merge rule stays in force.
 
 ## Completed work
 
