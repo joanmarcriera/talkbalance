@@ -13,14 +13,27 @@ data class SpeakerStat(
 )
 
 /**
+ * One attributed talk segment: `[startMs, endMs)` credited to [speakerId]. The lightweight record
+ * that backs the live timeline ribbon and the report's full-session timeline graph. Kept minimal
+ * (no samples) so retaining a capped history costs almost nothing.
+ */
+data class TalkSegment(
+    val speakerId: String,
+    val startMs: Long,
+    val endMs: Long,
+)
+
+/**
  * Immutable snapshot of the whole session's talk statistics. [totalSpeechMs] is the sum of every
  * speaker's [SpeakerStat.talkMs] (incl. the "everyone else" bucket) and is the denominator the UI
  * uses for talk-share. [speakers] preserves first-seen order; callers that want a share-sorted view
- * (e.g. [SessionEngine]) sort it themselves.
+ * (e.g. [SessionEngine]) sort it themselves. [segments] is the recent (capped) timeline of attributed
+ * segments in arrival order, oldest first (see [SessionStats.SEGMENT_CAP]).
  */
 data class StatsSnapshot(
     val totalSpeechMs: Long,
     val speakers: List<SpeakerStat>,
+    val segments: List<TalkSegment>,
 )
 
 /**
@@ -56,6 +69,10 @@ class SessionStats {
     private val accumulators = LinkedHashMap<String, Acc>()
     private var totalSpeechMs = 0L
 
+    // Recent attributed segments for the timeline graphs, oldest first. Capped at [SEGMENT_CAP] so a
+    // long session can never grow this unboundedly (the ribbon shows only the recent tail anyway).
+    private val segments = ArrayDeque<TalkSegment>()
+
     // The turn currently being extended. Folded into every snapshot() but only committed to the
     // speaker's `turns` / `longestMonologueMs` when a boundary closes it (see [finalizeOpenTurn]).
     private var openSpeaker: String? = null
@@ -74,6 +91,9 @@ class SessionStats {
         val duration = endMs - startMs
         acc.talkMs += duration
         totalSpeechMs += duration
+
+        segments.addLast(TalkSegment(speakerId, startMs, endMs))
+        if (segments.size > SEGMENT_CAP) segments.removeFirst()
 
         val current = openSpeaker
         when {
@@ -112,7 +132,11 @@ class SessionStats {
                 longestMonologueMs = longest,
             )
         }
-        return StatsSnapshot(totalSpeechMs = totalSpeechMs, speakers = speakers)
+        return StatsSnapshot(
+            totalSpeechMs = totalSpeechMs,
+            speakers = speakers,
+            segments = segments.toList(),
+        )
     }
 
     private fun openTurn(speakerId: String, startMs: Long, endMs: Long) {
@@ -135,5 +159,12 @@ class SessionStats {
 
         /** Inter-segment gap (ms) at/above which a same-speaker run splits into a new turn. */
         const val TURN_GAP_MS: Long = 1_000L
+
+        /**
+         * Max retained timeline segments. The live ribbon only shows a recent window and the report
+         * timeline a whole-session overview, so keeping the last N segments (rather than every one)
+         * bounds memory on long sessions while staying more than enough to draw either graph.
+         */
+        const val SEGMENT_CAP: Int = 500
     }
 }

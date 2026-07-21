@@ -12,12 +12,17 @@ interface SessionDao {
     suspend fun insertSessionWithStats(
         session: SessionEntity,
         stats: List<SpeakerStatEntity>,
-    ) {
+    ): Long {
         val sessionId = insertSession(session)
         for (stat in stats) {
             insertStat(stat.copy(sessionId = sessionId))
         }
+        return sessionId
     }
+
+    /** Deletes one session by id (its speaker_stats cascade). Used to re-save after a label edit. */
+    @Query("DELETE FROM sessions WHERE id = :id")
+    suspend fun deleteSession(id: Long)
 
     @Insert
     suspend fun insertSession(session: SessionEntity): Long

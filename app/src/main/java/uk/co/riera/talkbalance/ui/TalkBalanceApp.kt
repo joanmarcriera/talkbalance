@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -189,7 +190,7 @@ private fun HomeScreen(
     val people by personDao.observeAll().collectAsStateWithLifecycle(emptyList())
     val scope = rememberCoroutineScope()
 
-    var mode by remember { mutableStateOf(Mode.TABLE) }
+    var mode by remember { mutableStateOf(Mode.DISCOVER) }
     var meId by remember { mutableStateOf<Long?>(null) }
 
     // Which row's overflow menu is open, if any.
@@ -213,51 +214,62 @@ private fun HomeScreen(
         Text("Everything stays on this phone. No audio is ever saved.")
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = mode == Mode.DISCOVER,
+                onClick = { mode = Mode.DISCOVER },
+                label = { Text("Discover") },
+            )
             FilterChip(selected = mode == Mode.TABLE, onClick = { mode = Mode.TABLE }, label = { Text("Table") })
             FilterChip(selected = mode == Mode.ME, onClick = { mode = Mode.ME }, label = { Text("Me") })
         }
 
         Text(
             when (mode) {
+                Mode.DISCOVER ->
+                    "Start and discover — no setup. Voices are found live and labelled Speaker 1, 2, 3… You can rename them any time."
                 Mode.TABLE -> "Everyone enrolled is tracked; unknown voices are “Everyone else”."
                 Mode.ME -> "Pick who you are — you’ll see You vs everyone else."
             },
             style = MaterialTheme.typography.bodySmall,
         )
 
-        if (people.isEmpty()) {
-            Card(Modifier.fillMaxWidth()) {
-                Text("No one enrolled yet. Add a person to start.", Modifier.padding(20.dp))
+        // Enrollment (people list + add) only applies to the setup-based modes. Discover needs none.
+        if (mode != Mode.DISCOVER) {
+            if (people.isEmpty()) {
+                Card(Modifier.fillMaxWidth()) {
+                    Text("No one enrolled yet. Add a person to start.", Modifier.padding(20.dp))
+                }
+            } else {
+                people.forEach { person ->
+                    PersonRow(
+                        person = person,
+                        selectable = mode == Mode.ME,
+                        selected = meId == person.id,
+                        onSelect = { meId = person.id },
+                        menuExpanded = menuForPersonId == person.id,
+                        onMenuExpandedChange = { expanded -> menuForPersonId = if (expanded) person.id else null },
+                        canMerge = people.size > 1,
+                        onDeleteClick = {
+                            menuForPersonId = null
+                            pendingDelete = person
+                        },
+                        onMergeClick = {
+                            menuForPersonId = null
+                            mergeSource = person
+                        },
+                    )
+                }
             }
-        } else {
-            people.forEach { person ->
-                PersonRow(
-                    person = person,
-                    selectable = mode == Mode.ME,
-                    selected = meId == person.id,
-                    onSelect = { meId = person.id },
-                    menuExpanded = menuForPersonId == person.id,
-                    onMenuExpandedChange = { expanded -> menuForPersonId = if (expanded) person.id else null },
-                    canMerge = people.size > 1,
-                    onDeleteClick = {
-                        menuForPersonId = null
-                        pendingDelete = person
-                    },
-                    onMergeClick = {
-                        menuForPersonId = null
-                        mergeSource = person
-                    },
-                )
-            }
-        }
 
-        OutlinedButton(onClick = onAddPerson, modifier = Modifier.fillMaxWidth()) {
-            Text("Add person")
+            OutlinedButton(onClick = onAddPerson, modifier = Modifier.fillMaxWidth()) {
+                Text("Add person")
+            }
         }
 
         Spacer(Modifier.height(8.dp))
 
         val canStart = when (mode) {
+            Mode.DISCOVER -> true // no enrollment required
             Mode.TABLE -> people.isNotEmpty()
             Mode.ME -> meId != null
         }
@@ -265,7 +277,12 @@ private fun HomeScreen(
             enabled = canStart,
             onClick = { onStart(mode, if (mode == Mode.ME) meId else null) },
             modifier = Modifier.fillMaxWidth().height(56.dp),
-        ) { Text("Start", style = MaterialTheme.typography.titleMedium) }
+        ) {
+            Text(
+                if (mode == Mode.DISCOVER) "Start and discover" else "Start",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
     }
 
     pendingDelete?.let { person ->
@@ -610,6 +627,10 @@ private fun SessionScreen(
     val phase by vm.phase.collectAsStateWithLifecycle()
     val live by vm.live.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
+    val displayMeta by vm.displayMeta.collectAsStateWithLifecycle()
+
+    // Discover mode: which speaker's rename dialog is open (speakerId to its current label), if any.
+    var renameTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     // Foreground-only guarantee (this release has no foreground service — see [abortOnStopObserver]).
     // The real "app is no longer in the foreground" signal is the Activity lifecycle reaching
@@ -680,8 +701,9 @@ private fun SessionScreen(
             }
             else -> {
                 val leader = live.speakers.firstOrNull()
+                val leaderLabel = leader?.let { displayMeta[it.speakerId]?.name ?: it.label } ?: "—"
                 Text(
-                    "Leading: ${leader?.label ?: "—"} · ${((leader?.share ?: 0.0) * 100).roundToInt()}%",
+                    "Leading: $leaderLabel · ${((leader?.share ?: 0.0) * 100).roundToInt()}%",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                 )
@@ -701,6 +723,16 @@ private fun SessionScreen(
 
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
+                // Live timeline ribbon: the recent window of finished segments, one lane per speaker.
+                if (live.segments.isNotEmpty()) {
+                    TimelineRibbon(
+                        segments = live.segments,
+                        elapsedMs = shownElapsedMs,
+                        colorFor = { id -> displayMeta[id]?.let { colorForIndex(it.colorIndex) } ?: EveryoneElseColor },
+                        laneOrder = live.speakers.map { it.speakerId },
+                    )
+                }
+
                 Column(
                     Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -709,11 +741,22 @@ private fun SessionScreen(
                         Text("Waiting for the first voices…", style = MaterialTheme.typography.bodyMedium)
                     }
                     live.speakers.forEachIndexed { index, share ->
+                        val meta = displayMeta[share.speakerId]
+                        val label = meta?.name ?: share.label
                         val color = if (share.isEveryoneElse) EveryoneElseColor
-                        else vm.metaBySpeakerId[share.speakerId]?.let { colorForIndex(it.colorIndex) }
-                            ?: EveryoneElseColor
+                        else meta?.let { colorForIndex(it.colorIndex) } ?: EveryoneElseColor
                         val glow = live.isSpeechActive && index == 0 && !share.isEveryoneElse
-                        SpeakerBar(share.label, share.share, color, glow)
+                        // Discover speakers are renameable by tapping the row.
+                        val renameable = mode == Mode.DISCOVER && !share.isEveryoneElse
+                        SpeakerBar(
+                            label = label,
+                            share = share.share,
+                            color = color,
+                            glow = glow,
+                            onRename = if (renameable) {
+                                { renameTarget = share.speakerId to label }
+                            } else null,
+                        )
                     }
                 }
 
@@ -725,17 +768,49 @@ private fun SessionScreen(
             }
         }
     }
+
+    renameTarget?.let { (speakerId, current) ->
+        RenameSpeakerDialog(
+            currentLabel = current,
+            onConfirm = { newName ->
+                vm.rename(speakerId, newName)
+                renameTarget = null
+            },
+            onDismiss = { renameTarget = null },
+        )
+    }
 }
 
 @Composable
-private fun SpeakerBar(label: String, share: Double, color: Color, glow: Boolean) {
+private fun SpeakerBar(
+    label: String,
+    share: Double,
+    color: Color,
+    glow: Boolean,
+    onRename: (() -> Unit)? = null,
+) {
     val width by animateFloatAsState(targetValue = share.toFloat().coerceIn(0f, 1f), label = "bar-$label")
     val borderColor by animateColorAsState(
         targetValue = if (glow) color else Color.Transparent, label = "glow-$label",
     )
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    // A renameable row is a >=48dp tap target that opens the rename dialog.
+    val rowModifier = if (onRename != null) {
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onRename)
+            .semantics { contentDescription = "Rename $label" }
+            .padding(vertical = 4.dp)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Column(rowModifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Text(label, fontWeight = if (glow) FontWeight.Bold else FontWeight.Normal)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(label, fontWeight = if (glow) FontWeight.Bold else FontWeight.Normal)
+                if (onRename != null) Text("✎", style = MaterialTheme.typography.bodySmall)
+            }
             Text("${(share * 100).roundToInt()}%")
         }
         Box(
@@ -749,6 +824,94 @@ private fun SpeakerBar(label: String, share: Double, color: Color, glow: Boolean
             )
         }
     }
+}
+
+/**
+ * Live timeline ribbon: the recent [windowMs] window of finished speech [segments], each drawn as a
+ * block in its speaker's colour on a per-speaker lane. Newer segments are to the right (now = right
+ * edge). Pure Compose [Canvas], no chart libraries.
+ */
+@Composable
+private fun TimelineRibbon(
+    segments: List<uk.co.riera.talkbalance.session.TalkSegment>,
+    elapsedMs: Long,
+    colorFor: (String) -> Color,
+    laneOrder: List<String>,
+    windowMs: Long = 60_000L,
+) {
+    // Lanes: keep a stable order (share-sorted speakers), append any segment speakers not yet listed.
+    val lanes = remember(laneOrder, segments) {
+        val extras = segments.map { it.speakerId }.distinct().filter { it !in laneOrder }
+        (laneOrder + extras).ifEmpty { listOf("") }
+    }
+    val laneHeight = 14.dp
+    val laneGap = 4.dp
+    val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Last 60 seconds", style = MaterialTheme.typography.labelSmall)
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(laneHeight * lanes.size + laneGap * (lanes.size - 1).coerceAtLeast(0))
+                .semantics { contentDescription = "Timeline of who spoke in the last minute" },
+        ) {
+            val windowEnd = maxOf(elapsedMs, windowMs)
+            val windowStart = windowEnd - windowMs
+            val laneH = laneHeight.toPx()
+            val gapH = laneGap.toPx()
+            lanes.forEachIndexed { index, speakerId ->
+                val top = index * (laneH + gapH)
+                // Lane background track.
+                drawRoundRect(
+                    color = trackColor,
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, top),
+                    size = androidx.compose.ui.geometry.Size(size.width, laneH),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(laneH / 2),
+                )
+                segments.asSequence()
+                    .filter { it.speakerId == speakerId && it.endMs >= windowStart }
+                    .forEach { seg ->
+                        val s = ((seg.startMs - windowStart).toFloat() / windowMs).coerceIn(0f, 1f)
+                        val e = ((seg.endMs - windowStart).toFloat() / windowMs).coerceIn(0f, 1f)
+                        val x = s * size.width
+                        val w = ((e - s) * size.width).coerceAtLeast(2f)
+                        drawRoundRect(
+                            color = colorFor(speakerId),
+                            topLeft = androidx.compose.ui.geometry.Offset(x, top),
+                            size = androidx.compose.ui.geometry.Size(w, laneH),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(laneH / 2),
+                        )
+                    }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RenameSpeakerDialog(
+    currentLabel: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(currentLabel) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename speaker") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Give “$currentLabel” a name — e.g. Dad, Sam.", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "New speaker name" },
+                )
+            }
+        },
+        confirmButton = { Button(onClick = { onConfirm(text) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 // --- Report ---------------------------------------------------------------------------------------
@@ -772,11 +935,25 @@ private fun ReportScreen(
         ),
     )
     val persistState by vm.persistState.collectAsStateWithLifecycle()
+    // Reactive meta so a rename on this screen repaints the donut, timeline and rows immediately.
+    // For enrolled modes this equals the passed-in [meta]; for Discover it tracks renames.
+    val liveMeta by vm.displayMeta.collectAsStateWithLifecycle()
+    val displayMeta = liveMeta.ifEmpty { meta }
+
+    val isDiscover = result.mode == Mode.DISCOVER
+    var renameTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val total = result.speakers.sumOf { it.talkMs }.coerceAtLeast(1)
     val rows = result.speakers.sortedByDescending { it.talkMs }
     val everyoneElseLabel = result.mode.everyoneElseLabel
-    val balance = balanceTarget(result.mode, meta.size)
+    val balance = balanceTarget(result.mode, displayMeta.size.coerceAtLeast(1))
+
+    fun labelFor(speakerId: String, isEE: Boolean): String =
+        if (isEE) everyoneElseLabel else displayMeta[speakerId]?.name ?: speakerId
+
+    fun colorFor(speakerId: String, isEE: Boolean): Color =
+        if (isEE) EveryoneElseColor
+        else displayMeta[speakerId]?.let { colorForIndex(it.colorIndex) } ?: EveryoneElseColor
 
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -807,16 +984,42 @@ private fun ReportScreen(
             )
         }
 
+        // Talk-share donut.
+        TalkShareDonut(
+            slices = rows.map { stat ->
+                val isEE = stat.speakerId == SessionStats.EVERYONE_ELSE
+                DonutSlice(labelFor(stat.speakerId, isEE), stat.talkMs, colorFor(stat.speakerId, isEE))
+            },
+        )
+
+        // Full-session timeline of every attributed segment.
+        if (result.segments.isNotEmpty()) {
+            SessionTimeline(
+                segments = result.segments,
+                durationMs = result.durationMs.coerceAtLeast(1),
+                laneOrder = rows.map { it.speakerId },
+                colorFor = { id -> colorFor(id, id == SessionStats.EVERYONE_ELSE) },
+            )
+        }
+
         rows.forEach { stat ->
             val isEE = stat.speakerId == SessionStats.EVERYONE_ELSE
-            val label = if (isEE) everyoneElseLabel else meta[stat.speakerId]?.name ?: stat.speakerId
-            val color = if (isEE) EveryoneElseColor
-            else meta[stat.speakerId]?.let { colorForIndex(it.colorIndex) } ?: EveryoneElseColor
+            val label = labelFor(stat.speakerId, isEE)
+            val color = colorFor(stat.speakerId, isEE)
             val share = stat.talkMs.toDouble() / total
+            val renameable = isDiscover && !isEE
 
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SpeakerBar(label, share, color, glow = false)
+                    SpeakerBar(
+                        label = label,
+                        share = share,
+                        color = color,
+                        glow = false,
+                        onRename = if (renameable) {
+                            { renameTarget = stat.speakerId to label }
+                        } else null,
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text("${formatDuration(stat.talkMs)} talk", style = MaterialTheme.typography.bodySmall)
                         Text("${stat.turns} turns", style = MaterialTheme.typography.bodySmall)
@@ -831,6 +1034,122 @@ private fun ReportScreen(
 
         Spacer(Modifier.height(8.dp))
         Button(onClick = onDone, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Done") }
+    }
+
+    renameTarget?.let { (speakerId, current) ->
+        RenameSpeakerDialog(
+            currentLabel = current,
+            onConfirm = { newName ->
+                vm.rename(speakerId, newName)
+                renameTarget = null
+            },
+            onDismiss = { renameTarget = null },
+        )
+    }
+}
+
+/** One wedge of the talk-share donut. */
+private data class DonutSlice(val label: String, val talkMs: Long, val color: Color)
+
+/**
+ * Talk-share donut (pie with a hole): each speaker a wedge sized by their share of total talk time,
+ * in their colour, with a percentage legend. Pure Compose [Canvas].
+ */
+@Composable
+private fun TalkShareDonut(slices: List<DonutSlice>) {
+    val total = slices.sumOf { it.talkMs }.coerceAtLeast(1)
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier
+                .size(120.dp)
+                .semantics { contentDescription = "Talk-share donut chart" },
+        ) {
+            var startAngle = -90f
+            val stroke = size.minDimension * 0.22f
+            val inset = stroke / 2
+            slices.forEach { slice ->
+                val sweep = (slice.talkMs.toFloat() / total) * 360f
+                drawArc(
+                    color = slice.color,
+                    startAngle = startAngle,
+                    sweepAngle = sweep,
+                    useCenter = false,
+                    topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+                    size = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke),
+                )
+                startAngle += sweep
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
+            slices.forEach { slice ->
+                val pct = (slice.talkMs.toDouble() / total * 100).roundToInt()
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.size(12.dp).clip(CircleShape).background(slice.color))
+                    Text("${slice.label} · $pct%", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Full-session timeline: every attributed [segments] segment drawn as a block in its speaker's
+ * colour on a per-speaker lane, scaled to the whole session [durationMs]. Pure Compose [Canvas].
+ */
+@Composable
+private fun SessionTimeline(
+    segments: List<uk.co.riera.talkbalance.session.TalkSegment>,
+    durationMs: Long,
+    laneOrder: List<String>,
+    colorFor: (String) -> Color,
+) {
+    val lanes = remember(laneOrder, segments) {
+        val extras = segments.map { it.speakerId }.distinct().filter { it !in laneOrder }
+        (laneOrder + extras).ifEmpty { listOf("") }
+    }
+    val laneHeight = 16.dp
+    val laneGap = 4.dp
+    val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    val first = segments.firstOrNull()?.startMs ?: 0L
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Session timeline", style = MaterialTheme.typography.labelSmall)
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(laneHeight * lanes.size + laneGap * (lanes.size - 1).coerceAtLeast(0))
+                .semantics { contentDescription = "Timeline of who spoke across the whole session" },
+        ) {
+            val laneH = laneHeight.toPx()
+            val gapH = laneGap.toPx()
+            lanes.forEachIndexed { index, speakerId ->
+                val top = index * (laneH + gapH)
+                drawRoundRect(
+                    color = trackColor,
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, top),
+                    size = androidx.compose.ui.geometry.Size(size.width, laneH),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(laneH / 2),
+                )
+                segments.asSequence()
+                    .filter { it.speakerId == speakerId }
+                    .forEach { seg ->
+                        val s = ((seg.startMs - first).toFloat() / durationMs).coerceIn(0f, 1f)
+                        val e = ((seg.endMs - first).toFloat() / durationMs).coerceIn(0f, 1f)
+                        val x = s * size.width
+                        val w = ((e - s) * size.width).coerceAtLeast(2f)
+                        drawRoundRect(
+                            color = colorFor(speakerId),
+                            topLeft = androidx.compose.ui.geometry.Offset(x, top),
+                            size = androidx.compose.ui.geometry.Size(w, laneH),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(laneH / 2),
+                        )
+                    }
+            }
+        }
     }
 }
 

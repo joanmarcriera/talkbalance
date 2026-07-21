@@ -73,6 +73,27 @@ class SessionPersistenceTest {
         assertTrue(stats[1].isEveryoneElse)
     }
 
+    @Test fun discoverModeTagsSessionAndPersistsSpeakerLabels() {
+        val result = SessionResult(
+            startedAtMs = 0,
+            endedAtMs = 20_000,
+            durationMs = 20_000,
+            mode = Mode.DISCOVER,
+            speakers = listOf(stat("s1", 12_000), stat("s2", 8_000)),
+        )
+        val (session, stats) = SessionPersistence.toEntities(
+            result,
+            speakerIdToPersonId = emptyMap(), // no enrolled people in discover
+            speakerLabels = mapOf("s1" to "Dad", "s2" to "Speaker 2"),
+        )
+
+        assertEquals("discover", session.mode)
+        assertEquals("Dad", stats[0].label)
+        assertNull(stats[0].personId)
+        assertFalse(stats[0].isEveryoneElse)
+        assertEquals("Speaker 2", stats[1].label)
+    }
+
     @Test fun unknownSpeakerIdBecomesNullPersonIdRatherThanDropping() {
         val result = SessionResult(
             startedAtMs = 0, endedAtMs = 5_000, durationMs = 5_000, mode = Mode.TABLE,

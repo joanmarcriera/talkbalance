@@ -35,4 +35,10 @@ data class SpeakerStatEntity(
     val talkMs: Long,
     val turns: Int,
     val longestMonologueMs: Long,
+    /**
+     * Final display label for this speaker. Set for discovered speakers (Discover mode) — either the
+     * user's rename or the default "Speaker N" — so the name survives into the saved report. Null for
+     * enrolled speakers (their name comes from [personId]) and for the "everyone else" bucket.
+     */
+    val label: String? = null,
 )

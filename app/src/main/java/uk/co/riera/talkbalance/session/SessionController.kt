@@ -29,6 +29,7 @@ import uk.co.riera.talkbalance.ml.EngineLeaseHolder
 import uk.co.riera.talkbalance.ml.MatcherMode
 import uk.co.riera.talkbalance.ml.SherpaEngines
 import uk.co.riera.talkbalance.ml.SherpaSpeakerMatcher
+import uk.co.riera.talkbalance.ml.SpeakerMatcher
 import uk.co.riera.talkbalance.ml.SpeakerMatcherFactory
 
 /** Whether the finished session was written to Room. Surfaced to the report so a save failure is honest. */
@@ -70,7 +71,8 @@ sealed interface PersistState {
 class SessionController private constructor(
     vad: Vad,
     private val engine: SessionEngine,
-    private val matcher: SherpaSpeakerMatcher,
+    /** Releases the matcher's native resources (no-op for the enrollment-free discover matcher). */
+    private val closeMatcher: () -> Unit,
     private val sessionDao: SessionDao,
     /** speakerId (as the engine used it) -> Room person id, for persisting per-speaker rows. */
     private val speakerIdToPersonId: Map<String, Long>,
@@ -79,6 +81,14 @@ class SessionController private constructor(
     /** Held for the whole session; released by [stop]/[close] so enrollment can run afterwards. */
     private val lease: EngineLeaseHolder.Lease,
 ) {
+    /**
+     * speakerId -> final display label, persisted for discovered speakers so a renamed/auto-labelled
+     * voice keeps its name in the saved report. The UI updates this live (renames + first-seen
+     * "Speaker N" defaults); [persist] reads whatever is current at save time. Empty for enrolled
+     * modes (names come from the person rows).
+     */
+    @Volatile
+    var speakerLabels: Map<String, String> = emptyMap()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val segmenter = SpeechSegmenter(vad)
     private var consumerJob: Job? = null
@@ -107,6 +117,9 @@ class SessionController private constructor(
 
     /** Kept so a persist retry doesn't need the engine (which is finalised by then). */
     @Volatile private var finishedResult: SessionResult? = null
+
+    /** Row id of the currently-saved session, so a label re-save replaces it instead of duplicating. */
+    @Volatile private var savedSessionId: Long? = null
 
     /**
      * Starts the microphone capture and the single consumer coroutine. Caller must already hold
@@ -202,18 +215,37 @@ class SessionController private constructor(
         scope.launch { persist(result) }
     }
 
+    /**
+     * Re-save the finished session with the current [speakerLabels] (a rename on the report screen).
+     * No-op before the session is finished — during a live session, renames only update
+     * [speakerLabels] and are written by the [stop] persist. Replaces the saved row rather than
+     * inserting a duplicate.
+     */
+    fun resaveWithCurrentLabels() {
+        val result = finishedResult ?: return
+        scope.launch { persist(result) }
+    }
+
     /** Releases the native matcher and the engine lease exactly once (from stop or close). */
     private fun releaseNative() {
         if (!nativeReleased.compareAndSet(false, true)) return
-        runCatching { matcher.close() }
+        runCatching { closeMatcher() }
         lease.release()
     }
 
     private suspend fun persist(result: SessionResult) {
         _persistState.value = PersistState.Saving
-        val (session, stats) = SessionPersistence.toEntities(result, speakerIdToPersonId)
-        runCatching { sessionDao.insertSessionWithStats(session, stats) }
-            .onSuccess { _persistState.value = PersistState.Saved }
+        val (session, stats) =
+            SessionPersistence.toEntities(result, speakerIdToPersonId, speakerLabels)
+        runCatching {
+            // Replace any previous save (a label re-save) so a renamed session never duplicates.
+            savedSessionId?.let { sessionDao.deleteSession(it) }
+            sessionDao.insertSessionWithStats(session, stats)
+        }
+            .onSuccess {
+                savedSessionId = it
+                _persistState.value = PersistState.Saved
+            }
             .onFailure {
                 Log.e(TAG, "failed to persist session", it)
                 _persistState.value = PersistState.Failed("Couldn't save this session.")
@@ -257,38 +289,55 @@ class SessionController private constructor(
                 val vad: Vad = engines.requireVad()
                 vad.reset()
 
-                val people: List<PersonEntity> = personDao.observeAll().first()
-                val matcherMode = if (mode == Mode.ME) MatcherMode.ME else MatcherMode.TABLE
-
+                // Build the mode's matcher, its display-name map and the speakerId -> personId map.
+                // Discover mode needs no enrolled people: an OnlineClusterMatcher discovers voices
+                // live as "s1"/"s2"/…, so there are no person rows and nothing native to close.
+                val matcher: SpeakerMatcher
+                val closeMatcher: () -> Unit
                 val displayNames: Map<String, String>
                 val speakerIdToPersonId: Map<String, Long>
-                when (mode) {
-                    Mode.TABLE -> {
-                        displayNames = people.associate { it.id.toString() to it.name }
-                        speakerIdToPersonId = people.associate { it.id.toString() to it.id }
+
+                if (mode == Mode.DISCOVER) {
+                    matcher = withContext(PIPELINE_DISPATCHER) {
+                        uk.co.riera.talkbalance.ml.OnlineClusterMatcher.create(extractor)
                     }
-                    Mode.ME -> {
-                        val me = people.first { it.id == mePersonId }
-                        displayNames = mapOf(SherpaSpeakerMatcher.ME_ID to me.name)
-                        speakerIdToPersonId = mapOf(SherpaSpeakerMatcher.ME_ID to me.id)
+                    closeMatcher = {}
+                    displayNames = emptyMap() // UI assigns "Speaker N" labels itself.
+                    speakerIdToPersonId = emptyMap()
+                } else {
+                    val people: List<PersonEntity> = personDao.observeAll().first()
+                    val matcherMode = if (mode == Mode.ME) MatcherMode.ME else MatcherMode.TABLE
+                    when (mode) {
+                        Mode.TABLE -> {
+                            displayNames = people.associate { it.id.toString() to it.name }
+                            speakerIdToPersonId = people.associate { it.id.toString() to it.id }
+                        }
+                        Mode.ME -> {
+                            val me = people.first { it.id == mePersonId }
+                            displayNames = mapOf(SherpaSpeakerMatcher.ME_ID to me.name)
+                            speakerIdToPersonId = mapOf(SherpaSpeakerMatcher.ME_ID to me.id)
+                        }
+                        Mode.DISCOVER -> error("unreachable")
                     }
+                    val sherpaMatcher = withContext(PIPELINE_DISPATCHER) {
+                        SpeakerMatcherFactory.build(
+                            personDao = personDao,
+                            extractor = extractor,
+                            threshold = threshold,
+                            mode = matcherMode,
+                            mePersonId = mePersonId,
+                        )
+                    }
+                    matcher = sherpaMatcher
+                    closeMatcher = { sherpaMatcher.close() }
                 }
 
-                val matcher = withContext(PIPELINE_DISPATCHER) {
-                    SpeakerMatcherFactory.build(
-                        personDao = personDao,
-                        extractor = extractor,
-                        threshold = threshold,
-                        mode = matcherMode,
-                        mePersonId = mePersonId,
-                    )
-                }
                 val engine = SessionEngine(matcher, mode, displayNames)
 
                 return SessionController(
                     vad = vad,
                     engine = engine,
-                    matcher = matcher,
+                    closeMatcher = closeMatcher,
                     sessionDao = sessionDao,
                     speakerIdToPersonId = speakerIdToPersonId,
                     audioCapture = AudioCapture(),

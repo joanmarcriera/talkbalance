@@ -160,4 +160,30 @@ class SessionStatsTest {
         stats.add("B", 4_000, 4_100)
         assertEquals(listOf("C", "A", "B"), stats.snapshot().speakers.map { it.speakerId })
     }
+
+    // --- timeline segments (for the graphs) ---
+
+    @Test fun segmentsRecordEveryAddInArrivalOrder() {
+        val stats = SessionStats()
+        stats.add("A", 0, 1_000)
+        stats.add("B", 1_000, 2_500)
+        stats.add("A", 2_500, 3_000)
+
+        val segments = stats.snapshot().segments
+        assertEquals(3, segments.size)
+        assertEquals(listOf("A", "B", "A"), segments.map { it.speakerId })
+        assertEquals(TalkSegment("B", 1_000, 2_500), segments[1])
+    }
+
+    @Test fun segmentsAreCappedKeepingTheMostRecent() {
+        val stats = SessionStats()
+        val n = SessionStats.SEGMENT_CAP + 50
+        for (i in 0 until n) stats.add("A", i * 10L, i * 10L + 5L)
+
+        val segments = stats.snapshot().segments
+        assertEquals(SessionStats.SEGMENT_CAP, segments.size)
+        // Oldest 50 dropped; the newest is the last add.
+        assertEquals((n - 1) * 10L, segments.last().startMs)
+        assertEquals(50 * 10L, segments.first().startMs)
+    }
 }
