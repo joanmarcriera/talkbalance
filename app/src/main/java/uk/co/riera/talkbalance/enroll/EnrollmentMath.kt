@@ -132,7 +132,7 @@ object SimilarVoiceCheck {
             if (existingCentroid.size != newCentroid.size) continue // different model/dim — skip
             val similarity = cosineSimilarity(newCentroid, existingCentroid)
             if (similarity > threshold && (best == null || similarity > best.similarity)) {
-                best = SimilarVoiceWarning(profile.name, similarity)
+                best = SimilarVoiceWarning(name = profile.name, similarity = similarity, personId = profile.id)
             }
         }
         return best
