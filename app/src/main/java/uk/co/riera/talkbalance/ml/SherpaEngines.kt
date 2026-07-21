@@ -105,9 +105,12 @@ class SherpaEngines(
     companion object {
         const val SAMPLE_RATE = 16_000
         const val VAD_MODEL = "silero_vad.onnx"
-        const val PRIMARY_EMBEDDING_MODEL = "wespeaker_en_voxceleb_CAM++_LM.onnx"
-        const val BENCHMARK_EMBEDDING_MODEL =
+        // T3 A/B on-device (2026-07-21, bench-data/T3-DECISION.md): ERes2Net scored 10/10
+        // at threshold 0.50 through a real acoustic channel; CAM++ collapsed to 4/10 with
+        // same-speaker similarity ~0.13. ERes2Net is the production model.
+        const val PRIMARY_EMBEDDING_MODEL =
             "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx"
+        const val BENCHMARK_EMBEDDING_MODEL = "wespeaker_en_voxceleb_CAM++_LM.onnx"
         private const val THREAD_COUNT = 2
     }
 }
