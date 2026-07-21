@@ -31,11 +31,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import uk.co.riera.talkbalance.data.DeleteAllResult
 
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    onDeleteAllData: suspend () -> Unit,
+    onDeleteAllData: suspend () -> DeleteAllResult,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -45,6 +46,8 @@ fun SettingsScreen(
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle(true)
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    var deleteResult by remember { mutableStateOf<DeleteAllResult?>(null) }
     var developerExpanded by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -52,11 +55,23 @@ fun SettingsScreen(
         DeleteAllDataDialog(
             onConfirm = {
                 showDeleteConfirm = false
+                deleting = true
                 scope.launch {
-                    onDeleteAllData()
+                    val result = onDeleteAllData()
+                    deleting = false
+                    deleteResult = result
                 }
             },
             onDismiss = { showDeleteConfirm = false },
+        )
+    }
+
+    deleteResult?.let { result ->
+        AlertDialog(
+            onDismissRequest = { deleteResult = null },
+            title = { Text(if (result.allSucceeded) "Data deleted" else "Not fully deleted") },
+            text = { Text(result.summary) },
+            confirmButton = { TextButton(onClick = { deleteResult = null }) { Text("OK") } },
         )
     }
 
@@ -137,7 +152,10 @@ fun SettingsScreen(
         SettingCard(title = "Privacy") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "All processing happens on this phone. The app has no Internet permission — verify it yourself in system settings, so nothing you say can ever leave the device.",
+                    "Talk Balance does not request Internet permission and never sends audio " +
+                        "off the device — microphone audio is processed in memory and is never " +
+                        "written to disk. You can verify the missing Internet permission yourself " +
+                        "in system settings.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -147,9 +165,10 @@ fun SettingsScreen(
         SettingCard(title = "Data") {
             Button(
                 onClick = { showDeleteConfirm = true },
+                enabled = !deleting,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Delete all data")
+                Text(if (deleting) "Deleting…" else "Delete all data")
             }
         }
 

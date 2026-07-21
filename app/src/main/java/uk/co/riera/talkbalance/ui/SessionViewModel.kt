@@ -10,9 +10,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import uk.co.riera.talkbalance.data.PersonDao
 import uk.co.riera.talkbalance.data.SessionDao
+import uk.co.riera.talkbalance.ml.EngineBusyException
 import uk.co.riera.talkbalance.ml.SherpaEngines
 import uk.co.riera.talkbalance.ml.SherpaSpeakerMatcher
 import uk.co.riera.talkbalance.session.Mode
+import uk.co.riera.talkbalance.session.PersistState
 import uk.co.riera.talkbalance.session.SessionController
 import uk.co.riera.talkbalance.session.SessionResult
 import uk.co.riera.talkbalance.session.SessionUiState
@@ -67,6 +69,10 @@ class SessionViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** Whether the finished session was saved to Room; drives the report's saved/retry affordance. */
+    private val _persistState = MutableStateFlow<PersistState>(PersistState.Saving)
+    val persistState: StateFlow<PersistState> = _persistState.asStateFlow()
+
     /** Start a session in [mode]. [mePersonId] required for Me mode. Call once per instance. */
     fun start(mode: Mode, mePersonId: Long?) {
         if (controller != null) return
@@ -98,8 +104,11 @@ class SessionViewModel(
                 // Relay the controller's flows into our own so the UI subscribes once.
                 viewModelScope.launch { c.uiState.collect { _live.value = it } }
                 viewModelScope.launch { c.error.collect { if (it != null) _error.value = it } }
+                viewModelScope.launch { c.persistState.collect { _persistState.value = it } }
                 c.start()
                 _phase.value = Phase.Running
+            } catch (e: EngineBusyException) {
+                _phase.value = Phase.Failed("The speech engine is busy — finish adding a person first.")
             } catch (e: Throwable) {
                 _phase.value = Phase.Failed(e.message ?: "Could not start the session.")
             }
@@ -113,6 +122,28 @@ class SessionViewModel(
             val result = c.stop()
             _phase.value = Phase.Finished(result)
         }
+    }
+
+    /** Retry saving the finished session (report's "couldn't save — retry" action). */
+    fun retryPersist() {
+        controller?.retryPersist()
+    }
+
+    /**
+     * Hard-stop the underlying session (cancels capture + pipeline, releases the engine lease).
+     * Called from the session screen's dispose path so leaving the screen never leaves the mic on.
+     */
+    fun abort() {
+        controller?.close()
+    }
+
+    /**
+     * Foreground-only guarantee: when the ViewModel is cleared (screen left, back, Activity
+     * recreation, process teardown), abort the controller so no invisible microphone survives.
+     */
+    override fun onCleared() {
+        controller?.close()
+        super.onCleared()
     }
 
     companion object {

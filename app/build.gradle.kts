@@ -67,6 +67,9 @@ android {
     }
     androidResources { noCompress += "onnx" }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    // Let JVM unit tests exercise the capture thread without a device: un-mocked android.* stubs
+    // (Process.setThreadPriority, Log.w) return defaults instead of throwing "not mocked".
+    testOptions { unitTests { isReturnDefaultValues = true } }
 }
 
 dependencies {

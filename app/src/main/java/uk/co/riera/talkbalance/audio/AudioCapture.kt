@@ -5,10 +5,67 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
-import kotlinx.coroutines.DelicateCoroutinesApi
+import android.util.Log
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
-import kotlinx.coroutines.channels.trySendBlocking
+
+/**
+ * The microphone-frame producer [AudioCapture] drives, factored out so the capture/backpressure
+ * loop is unit-testable on the plain JVM without a real `AudioRecord` (which needs a device). The
+ * production implementation is [AudioRecordFrameSource]; tests supply a synthetic one.
+ */
+internal interface FrameSource {
+    /** Opens the recorder. Returns `null` on success, or a human error message on failure. */
+    fun open(): String?
+
+    /**
+     * Reads up to `out.size` samples into [out]; returns the count read (`>= 0`), or a negative
+     * `AudioRecord.ERROR_*` code. May block until a frame is available.
+     */
+    fun read(out: ShortArray): Int
+
+    /** Stops and releases the recorder. Safe to call more than once. */
+    fun close()
+}
+
+/**
+ * Non-blocking backpressure accounting for the capture thread: real-time audio must never block, so
+ * a full downstream channel means we drop the frame rather than stall the mic. Pure (no Android /
+ * coroutine types) so the count-and-alert policy is fully unit-testable.
+ *
+ * - Every dropped frame is counted ([droppedFrames]).
+ * - After [alertThreshold] *consecutive* drops we ask (once) for a single [AudioEvent.Error] to be
+ *   surfaced so the UI can tell the user the pipeline is overloaded; the alert re-arms only after a
+ *   frame is delivered again.
+ */
+internal class OverflowPolicy(private val alertThreshold: Int = DEFAULT_ALERT_THRESHOLD) {
+    var droppedFrames: Long = 0L
+        private set
+
+    private var consecutiveDrops = 0
+    private var alerted = false
+
+    /** Record a successful delivery: resets the consecutive-drop run and re-arms the alert. */
+    fun onDelivered() {
+        consecutiveDrops = 0
+        alerted = false
+    }
+
+    /** Record a dropped frame. Returns true exactly once per overload burst, when the alert fires. */
+    fun onDropped(): Boolean {
+        droppedFrames++
+        consecutiveDrops++
+        if (consecutiveDrops >= alertThreshold && !alerted) {
+            alerted = true
+            return true
+        }
+        return false
+    }
+
+    companion object {
+        const val DEFAULT_ALERT_THRESHOLD = 32
+    }
+}
 
 /**
  * Production 16 kHz mono PCM16 mic capture: a dedicated [Thread.MAX_PRIORITY] /
@@ -29,13 +86,35 @@ import kotlinx.coroutines.channels.trySendBlocking
  * - Read errors (e.g. the mic get stolen by a phone call, `AudioRecord.read` returning a negative
  *   error code) never throw out of the capture thread — they are sent as [AudioEvent.Error] and
  *   end the capture loop cleanly.
+ *
+ * **Backpressure:** frame delivery is **non-blocking** ([kotlinx.coroutines.channels.Channel.trySend]).
+ * If the consumer stalls and the channel fills, frames are dropped and counted rather than blocking
+ * the real-time capture thread (a blocking send into a full channel with a dead consumer is exactly
+ * the "Stop hangs forever / mic never released" wedge this class must avoid). After a burst of
+ * consecutive drops a single [AudioEvent.Error] is surfaced. [stop] flips `running` and closes the
+ * channel, so the thread is never left blocked on I/O and always joins.
  */
-class AudioCapture(
-    private val sampleRate: Int = SAMPLE_RATE,
-    private val chunkSamples: Int = CHUNK_SAMPLES,
-    channelCapacity: Int = 64,
+class AudioCapture internal constructor(
+    private val sampleRate: Int,
+    private val chunkSamples: Int,
+    channelCapacity: Int,
+    private val frameSourceFactory: () -> FrameSource,
+    alertThreshold: Int = OverflowPolicy.DEFAULT_ALERT_THRESHOLD,
 ) {
+    /** Production constructor: a real `AudioRecord`-backed [FrameSource]. */
+    constructor(
+        sampleRate: Int = SAMPLE_RATE,
+        chunkSamples: Int = CHUNK_SAMPLES,
+        channelCapacity: Int = 64,
+    ) : this(
+        sampleRate = sampleRate,
+        chunkSamples = chunkSamples,
+        channelCapacity = channelCapacity,
+        frameSourceFactory = { AudioRecordFrameSource(sampleRate, chunkSamples) },
+    )
+
     private val channel = Channel<AudioEvent>(capacity = channelCapacity)
+    private val overflow = OverflowPolicy(alertThreshold)
 
     /** Downstream consumer end; only [AudioCapture] ever sends on it. */
     val events: ReceiveChannel<AudioEvent> get() = channel
@@ -46,12 +125,14 @@ class AudioCapture(
     /** True between a successful [start] and the matching [stop] returning. */
     val isRunning: Boolean get() = running
 
+    /** Total frames dropped due to downstream backpressure over this capture's lifetime. */
+    val droppedFrameCount: Long get() = overflow.droppedFrames
+
     /**
      * Starts the capture thread. Throws [IllegalStateException] if a previous capture is still
      * active (call [stop] first) — this is deliberate: silently starting a second `AudioRecord`
      * while one is already running is exactly the leak this class exists to prevent.
      */
-    @SuppressLint("MissingPermission") // caller gates on RECORD_AUDIO before start()
     fun start() {
         check(thread == null) { "AudioCapture.start() called while a capture thread is still active" }
         running = true
@@ -61,13 +142,19 @@ class AudioCapture(
     /**
      * Signals the capture thread to stop and blocks until it has actually exited (its
      * `AudioRecord` is guaranteed released by the time this returns). Safe to call when not
-     * running. Throws [IllegalStateException] if the thread fails to exit within
-     * [JOIN_TIMEOUT_MS] — that indicates a stuck blocking read and is surfaced loudly rather than
-     * silently leaving a second `AudioRecord` for a subsequent [start] to collide with.
+     * running. Because delivery is non-blocking, the thread can never be wedged inside a send, so
+     * it always observes `running == false` on its next loop turn and exits well within
+     * [JOIN_TIMEOUT_MS]. The channel is also closed here so any consumer blocked on `receive()`
+     * unblocks. Throws [IllegalStateException] if the thread still fails to exit — that indicates a
+     * genuinely stuck blocking read, surfaced loudly rather than silently leaving a second
+     * `AudioRecord` for a subsequent [start] to collide with.
      */
     fun stop() {
         val worker = thread
         running = false
+        // Closing the channel unblocks a consumer waiting on receive() and makes any late
+        // trySend from the still-exiting thread a harmless no-op.
+        channel.close()
         if (worker == null) return
         worker.join(JOIN_TIMEOUT_MS)
         check(!worker.isAlive) {
@@ -80,62 +167,109 @@ class AudioCapture(
     /** Stops (if running) and closes the output channel. Call once the capture is done for good. */
     fun release() {
         stop()
-        channel.close()
     }
 
-    @SuppressLint("MissingPermission") // caller gates on RECORD_AUDIO before start()
-    @OptIn(DelicateCoroutinesApi::class)
     private fun runLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
-        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, ENCODING)
-        if (minBuffer <= 0) {
-            sendError("AudioRecord.getMinBufferSize returned $minBuffer; device cannot do 16kHz mono PCM16")
+        val source = frameSourceFactory()
+        val openError = source.open()
+        if (openError != null) {
+            sendError(openError)
             running = false
             return
         }
-        val bufferBytes = maxOf(minBuffer, chunkSamples * BYTES_PER_SAMPLE * BUFFER_CHUNK_MULTIPLE)
-
-        var record: AudioRecord? = null
         try {
-            record = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, CHANNEL_CONFIG, ENCODING, bufferBytes)
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                sendError("AudioRecord failed to initialize (state=${record.state})")
-                return
-            }
-
-            record.startRecording()
-            if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                sendError("AudioRecord did not enter RECORDING state after startRecording()")
-                return
-            }
-
             val shorts = ShortArray(chunkSamples)
             while (running) {
-                val n = record.read(shorts, 0, chunkSamples)
+                val n = source.read(shorts)
                 if (n < 0) {
                     sendError(readErrorMessage(n))
                     break
                 }
                 if (n == 0) continue
                 val samples = FloatArray(n) { shorts[it] / 32768f }
-                channel.trySendBlocking(AudioEvent.Samples(samples))
+                offer(AudioEvent.Samples(samples))
             }
         } catch (error: Throwable) {
             sendError(error.message ?: error.javaClass.simpleName, error)
         } finally {
-            runCatching { record?.stop() }
-            runCatching { record?.release() }
+            runCatching { source.close() }
             running = false
         }
     }
 
-    @OptIn(DelicateCoroutinesApi::class)
+    /**
+     * Non-blocking delivery. On a full channel the frame is dropped and counted; after a burst of
+     * consecutive drops a single overload [AudioEvent.Error] is (best-effort) surfaced.
+     */
+    private fun offer(event: AudioEvent) {
+        val result = channel.trySend(event)
+        if (result.isSuccess) {
+            overflow.onDelivered()
+            return
+        }
+        if (overflow.onDropped()) {
+            Log.w(
+                TAG,
+                "audio pipeline overloaded: dropped ${overflow.droppedFrames} frame(s); consumer not keeping up",
+            )
+            // Best-effort: if the channel is still full this is itself dropped, but by then the
+            // consumer is effectively gone and stop() is the real recovery path.
+            channel.trySend(
+                AudioEvent.Error(
+                    "Audio pipeline overloaded — some audio was dropped because the app couldn't keep up.",
+                ),
+            )
+        }
+    }
+
     private fun sendError(message: String, cause: Throwable? = null) {
-        channel.trySendBlocking(AudioEvent.Error(message, cause))
+        channel.trySend(AudioEvent.Error(message, cause))
+    }
+
+    /** Real `AudioRecord`-backed frame source. Not thread-safe; used only from the capture thread. */
+    private class AudioRecordFrameSource(
+        private val sampleRate: Int,
+        private val chunkSamples: Int,
+    ) : FrameSource {
+        private var record: AudioRecord? = null
+
+        @SuppressLint("MissingPermission") // caller gates on RECORD_AUDIO before start()
+        override fun open(): String? {
+            val minBuffer = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, ENCODING)
+            if (minBuffer <= 0) {
+                return "AudioRecord.getMinBufferSize returned $minBuffer; device cannot do 16kHz mono PCM16"
+            }
+            val bufferBytes = maxOf(minBuffer, chunkSamples * BYTES_PER_SAMPLE * BUFFER_CHUNK_MULTIPLE)
+            val rec = try {
+                AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, CHANNEL_CONFIG, ENCODING, bufferBytes)
+            } catch (error: Throwable) {
+                return error.message ?: error.javaClass.simpleName
+            }
+            record = rec
+            if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                return "AudioRecord failed to initialize (state=${rec.state})"
+            }
+            rec.startRecording()
+            if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                return "AudioRecord did not enter RECORDING state after startRecording()"
+            }
+            return null
+        }
+
+        override fun read(out: ShortArray): Int = record?.read(out, 0, out.size) ?: AudioRecord.ERROR_INVALID_OPERATION
+
+        override fun close() {
+            val rec = record ?: return
+            record = null
+            runCatching { rec.stop() }
+            runCatching { rec.release() }
+        }
     }
 
     companion object {
+        private const val TAG = "AudioCapture"
         const val SAMPLE_RATE = 16_000
         const val CHUNK_SAMPLES = 1_600 // 100 ms at 16 kHz
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO

@@ -29,6 +29,13 @@ internal interface VadBoundary {
     fun front(): VadSegment
     fun pop()
     fun isSpeechDetected(): Boolean
+
+    /**
+     * Force the VAD to close any in-flight utterance that has no trailing silence yet, so a segment
+     * that was still being buffered when capture stopped is emitted rather than lost (mirrors
+     * `Vad.flush()`; see `EnrollmentProcessor.vadTrim`).
+     */
+    fun flush()
 }
 
 /** Mirrors `com.k2fsa.sherpa.onnx.SpeechSegment`: [startSample] is in samples, not ms. */
@@ -41,6 +48,7 @@ internal class SherpaVadBoundary(private val vad: Vad) : VadBoundary {
     override fun front(): VadSegment = vad.front().let { VadSegment(it.start, it.samples) }
     override fun pop() = vad.pop()
     override fun isSpeechDetected(): Boolean = vad.isSpeechDetected()
+    override fun flush() = vad.flush()
 }
 
 /**
@@ -124,6 +132,40 @@ class SpeechSegmenter internal constructor(
 
         pendingSamples = if (offset < combined.size) combined.copyOfRange(offset, combined.size) else EMPTY
         return emitted
+    }
+
+    /**
+     * Finalises the stream: feeds any sub-window remainder as a final zero-padded window, flushes
+     * the VAD to close a still-open utterance (one with no trailing silence, e.g. Stop pressed
+     * mid-sentence), and drains every remaining segment — each still capped at [maxChunkMs]. Call
+     * once, after the last [accept]/[process], when capture has stopped. Clears the speech pulse.
+     */
+    fun flush(): List<SpeechChunk> {
+        val emitted = mutableListOf<SpeechChunk>()
+
+        // Any buffered samples below a full VAD window would otherwise never reach the VAD; pad
+        // to one window with trailing zeros so the tail of the utterance is still seen.
+        if (pendingSamples.isNotEmpty()) {
+            val padded = pendingSamples.copyOf(windowSize) // zero-filled up to windowSize
+            windowsFed += windowSize
+            boundary.acceptWaveform(padded)
+            drainInto(emitted)
+        }
+        pendingSamples = EMPTY
+
+        boundary.flush()
+        drainInto(emitted)
+
+        mutableIsSpeechActive.value = false
+        return emitted
+    }
+
+    private fun drainInto(out: MutableList<SpeechChunk>) {
+        while (!boundary.isEmpty()) {
+            val segment = boundary.front()
+            boundary.pop()
+            out += splitIfNeeded(segment)
+        }
     }
 
     /** Resets buffered state; does not touch the underlying VAD (call `Vad.reset()` for that). */

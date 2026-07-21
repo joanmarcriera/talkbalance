@@ -1,7 +1,6 @@
 package uk.co.riera.talkbalance.ui
 
 import android.Manifest
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -30,6 +29,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -50,6 +50,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -60,10 +65,13 @@ import uk.co.riera.talkbalance.TalkBalanceApplication
 import uk.co.riera.talkbalance.bench.BenchScreen
 import uk.co.riera.talkbalance.data.PersonEntity
 import uk.co.riera.talkbalance.session.Mode
+import uk.co.riera.talkbalance.session.PersistState
 import uk.co.riera.talkbalance.session.SessionResult
 import uk.co.riera.talkbalance.session.SessionStats
+import uk.co.riera.talkbalance.session.balanceTarget
 import uk.co.riera.talkbalance.settings.SettingsScreen
 import uk.co.riera.talkbalance.settings.SettingsViewModel
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /** Top-level navigation state for the real session flow. */
@@ -78,6 +86,8 @@ private sealed interface Screen {
     data class Report(
         val result: SessionResult,
         val meta: Map<String, SessionViewModel.SpeakerMeta>,
+        /** The finished session's nonce, so the report can reach the same ViewModel for save-retry. */
+        val nonce: Int,
     ) : Screen
 }
 
@@ -129,13 +139,14 @@ fun TalkBalanceApp() {
                     mode = s.mode,
                     mePersonId = s.mePersonId,
                     nonce = s.nonce,
-                    onFinished = { result, meta -> screen = Screen.Report(result, meta) },
+                    onFinished = { result, meta -> screen = Screen.Report(result, meta, s.nonce) },
                     onAbort = { screen = Screen.Home },
                 )
                 is Screen.Report -> ReportScreen(
                     modifier = content,
                     result = s.result,
                     meta = s.meta,
+                    nonce = s.nonce,
                     onDone = { screen = Screen.Home },
                 )
             }
@@ -148,7 +159,10 @@ fun TalkBalanceApp() {
 private fun AppBar(onBench: () -> Unit, onSettings: () -> Unit) = TopAppBar(
     title = { Text("Talk Balance") },
     actions = {
-        TextButton(onClick = onSettings) { Text("⚙") }
+        IconButton(
+            onClick = onSettings,
+            modifier = Modifier.semantics { contentDescription = "Settings" },
+        ) { Text("⚙") }
         if (BuildConfig.DEBUG) {
             TextButton(onClick = onBench) { Text("Bench") }
         }
@@ -287,18 +301,24 @@ private fun EnrollScreen(modifier: Modifier = Modifier, nonce: Int, onDone: () -
         Text("Pick a colour")
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             SpeakerPalette.forEachIndexed { index, color ->
+                val isSelected = colorIndex == index
                 Box(
                     Modifier
                         .weight(1f)
-                        .height(36.dp)
+                        .height(48.dp) // >= 48dp minimum touch target
                         .clip(RoundedCornerShape(8.dp))
                         .background(color)
                         .border(
-                            width = if (colorIndex == index) 3.dp else 0.dp,
+                            width = if (isSelected) 3.dp else 0.dp,
                             color = MaterialTheme.colorScheme.onSurface,
                             shape = RoundedCornerShape(8.dp),
                         )
-                        .clickable { colorIndex = index },
+                        .clickable { colorIndex = index }
+                        .semantics {
+                            contentDescription = "Colour ${index + 1} of ${SpeakerPalette.size}"
+                            role = Role.RadioButton
+                            selected = isSelected
+                        },
                 )
             }
         }
@@ -402,30 +422,53 @@ private fun SessionScreen(
     val live by vm.live.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
 
-    // Request permissions, then start, exactly once.
+    // Foreground-only guarantee: leaving this screen while still live (back, Activity recreation)
+    // must never leave an invisible microphone running. A normally-finished session already
+    // stopped capture, so keep its controller alive for the report's save-retry.
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            if (vm.phase.value !is SessionViewModel.Phase.Finished) vm.abort()
+        }
+    }
+
+    // Request permission, then start, exactly once. Only RECORD_AUDIO is needed — there is no
+    // notification or foreground service in this release.
     var requested by remember { mutableStateOf(false) }
-    val permissions = buildList {
-        add(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-    }.toTypedArray()
     val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { result ->
-        if (result[Manifest.permission.RECORD_AUDIO] == true) vm.start(mode, mePersonId)
-        else onAbort()
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) vm.start(mode, mePersonId) else onAbort()
     }
     androidx.compose.runtime.LaunchedEffect(Unit) {
         if (!requested) {
             requested = true
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
                 == android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) vm.start(mode, mePersonId) else permissionLauncher.launch(permissions)
+            ) vm.start(mode, mePersonId) else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
     // Hand the finished result up to nav.
     androidx.compose.runtime.LaunchedEffect(phase) {
         (phase as? SessionViewModel.Phase.Finished)?.let { onFinished(it.result, vm.metaBySpeakerId) }
+    }
+
+    // UI ticker: the engine only recomputes elapsed when a speech event arrives, so during silence
+    // the clock would freeze and then jump. Advance it once a second from a monotonic base instead.
+    var tickElapsedMs by remember { mutableStateOf(0L) }
+    androidx.compose.runtime.LaunchedEffect(phase) {
+        if (phase is SessionViewModel.Phase.Running) {
+            val base = System.currentTimeMillis() - live.elapsedMs
+            while (true) {
+                tickElapsedMs = System.currentTimeMillis() - base
+                delay(1_000)
+            }
+        }
+    }
+    val shownElapsedMs = if (phase is SessionViewModel.Phase.Running) {
+        maxOf(tickElapsedMs, live.elapsedMs)
+    } else {
+        live.elapsedMs
     }
 
     Column(
@@ -455,7 +498,7 @@ private fun SessionScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(Modifier.weight(1f))
-                    Text(formatDuration(live.elapsedMs), style = MaterialTheme.typography.titleMedium)
+                    Text(formatDuration(shownElapsedMs), style = MaterialTheme.typography.titleMedium)
                 }
 
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -517,12 +560,25 @@ private fun ReportScreen(
     modifier: Modifier = Modifier,
     result: SessionResult,
     meta: Map<String, SessionViewModel.SpeakerMeta>,
+    nonce: Int,
     onDone: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val app = context.applicationContext as TalkBalanceApplication
+    // Same keyed instance the session used, retained in the Activity store — so its save state is
+    // still observable and a failed save can be retried from here.
+    val vm: SessionViewModel = viewModel(
+        key = "session-$nonce",
+        factory = SessionViewModel.factory(
+            app.sherpaEngines, app.database.personDao(), app.database.sessionDao(), app.settingsRepository,
+        ),
+    )
+    val persistState by vm.persistState.collectAsStateWithLifecycle()
+
     val total = result.speakers.sumOf { it.talkMs }.coerceAtLeast(1)
     val rows = result.speakers.sortedByDescending { it.talkMs }
     val everyoneElseLabel = result.mode.everyoneElseLabel
-    val enrolledCount = meta.size.coerceAtLeast(1)
+    val balance = balanceTarget(result.mode, meta.size)
 
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -530,10 +586,28 @@ private fun ReportScreen(
     ) {
         Text("Report", style = MaterialTheme.typography.headlineMedium)
         Text("Talked for ${formatDuration(result.durationMs)}")
-        Text(
-            "Balanced would be about ${(100.0 / enrolledCount).roundToInt()}% each.",
-            style = MaterialTheme.typography.bodySmall,
-        )
+        Text(balance.copy, style = MaterialTheme.typography.bodySmall)
+
+        when (val ps = persistState) {
+            is PersistState.Saved -> Text(
+                "Saved to this phone.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            is PersistState.Failed -> Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "${ps.message} It wasn't saved.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    OutlinedButton(onClick = { vm.retryPersist() }) { Text("Retry save") }
+                }
+            }
+            PersistState.Saving -> Text(
+                "Saving…",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
 
         rows.forEach { stat ->
             val isEE = stat.speakerId == SessionStats.EVERYONE_ELSE

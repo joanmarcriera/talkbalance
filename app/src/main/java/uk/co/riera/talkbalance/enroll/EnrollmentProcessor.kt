@@ -142,11 +142,15 @@ class EnrollmentProcessor internal constructor(
             sampleRate: Int,
         ): FloatArray {
             val stream = extractor.createStream()
-            stream.acceptWaveform(samples, sampleRate)
-            stream.inputFinished()
-            val embedding = extractor.compute(stream)
-            stream.release()
-            return embedding
+            try {
+                stream.acceptWaveform(samples, sampleRate)
+                stream.inputFinished()
+                return extractor.compute(stream)
+            } finally {
+                // Release the native stream even if acceptWaveform/compute throws, so a failed
+                // enrollment can't leak an OnlineStream on the shared extractor.
+                stream.release()
+            }
         }
     }
 }

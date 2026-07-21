@@ -19,6 +19,10 @@ private class FakeVadBoundary : VadBoundary {
     var onAccept: ((windowIndex: Int) -> Unit)? = null
     var speechDetected = false
 
+    /** A segment the (fake) VAD is still buffering; only surfaces when [flush] is called. */
+    var pendingOnFlush: VadSegment? = null
+    var flushCount = 0
+
     override fun acceptWaveform(samples: FloatArray) {
         acceptedWindows += samples
         onAccept?.invoke(acceptedWindows.size - 1)
@@ -30,6 +34,10 @@ private class FakeVadBoundary : VadBoundary {
         queue.removeFirst()
     }
     override fun isSpeechDetected(): Boolean = speechDetected
+    override fun flush() {
+        flushCount++
+        pendingOnFlush?.let { queue.addLast(it); pendingOnFlush = null }
+    }
 
     fun enqueue(segment: VadSegment) = queue.addLast(segment)
 }
@@ -148,6 +156,57 @@ class SpeechSegmenterTest {
         assertEquals(2, chunks.size)
         assertEquals(100, chunks[0].samples.size)
         assertEquals(200, chunks[1].samples.size)
+    }
+
+    // --- flush(): recover the final utterance the VAD was still buffering when capture stopped ---
+
+    @Test fun flushDrainsAVadBufferedTailSegment() {
+        val fake = FakeVadBoundary()
+        val segmenter = SpeechSegmenter(fake, sampleRate = 16_000, windowSize = 512, maxChunkMs = 3_500L)
+
+        // Feed some audio the VAD holds onto (no closing silence) — nothing emitted yet.
+        val live = segmenter.accept(FloatArray(512))
+        assertTrue(live.isEmpty())
+
+        // The tail only comes out on flush() — exactly the "Stop mid-sentence" case.
+        fake.pendingOnFlush = VadSegment(startSample = 0, samples = FloatArray(8_000))
+        val flushed = segmenter.flush()
+
+        assertEquals(1, fake.flushCount)
+        assertEquals(1, flushed.size)
+        assertEquals(8_000, flushed[0].samples.size)
+        assertFalse(segmenter.isSpeechActive.value)
+    }
+
+    @Test fun flushFeedsSubWindowRemainderAsAFinalPaddedWindow() {
+        val fake = FakeVadBoundary()
+        val segmenter = SpeechSegmenter(fake, sampleRate = 16_000, windowSize = 512, maxChunkMs = 3_500L)
+
+        // 300 samples < one 512 window: buffered, never fed to the VAD by accept().
+        segmenter.accept(FloatArray(300) { it.toFloat() })
+        assertEquals(0, fake.acceptedWindows.size)
+
+        segmenter.flush()
+
+        // flush() must have fed the padded remainder as one full window so the tail is still seen.
+        assertEquals(1, fake.acceptedWindows.size)
+        assertEquals(512, fake.acceptedWindows[0].size)
+        assertEquals(0f, fake.acceptedWindows[0][0], 0f)
+        assertEquals(299f, fake.acceptedWindows[0][299], 0f)
+        assertEquals(0f, fake.acceptedWindows[0][300], 0f) // zero-padded tail
+    }
+
+    @Test fun flushSplitsAnOverlongBufferedSegmentToTheMaxCap() {
+        val fake = FakeVadBoundary()
+        val segmenter = SpeechSegmenter(fake, sampleRate = 16_000, windowSize = 512, maxChunkMs = 3_500L)
+        val maxSamples = 3_500 * 16_000 / 1_000 // 56_000
+
+        fake.pendingOnFlush = VadSegment(startSample = 0, samples = FloatArray(maxSamples * 2 + 10))
+        val flushed = segmenter.flush()
+
+        assertTrue(flushed.all { it.samples.size <= maxSamples })
+        assertEquals(3, flushed.size)
+        assertEquals(maxSamples * 2 + 10, flushed.sumOf { it.samples.size })
     }
 
     // --- isSpeechActive pulse ---
