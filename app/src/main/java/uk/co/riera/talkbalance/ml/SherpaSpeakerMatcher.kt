@@ -59,6 +59,15 @@ class SherpaSpeakerMatcher(
         require(mode != MatcherMode.ME || centroids.containsKey(ME_ID)) {
             "MatcherMode.ME requires an enrolled person with id \"$ME_ID\" (got ${centroids.keys})"
         }
+        diagLine("=== session start === mode=$mode dim=${extractor.dim()} threshold=$threshold enrolled=${enrolled.map { it.id + ":" + it.embeddings.size }}")
+    }
+
+    // TEMP diagnostic (diag-matcher branch only): persist to a file so timing/logcat-rolling can't lose it.
+    private fun diagLine(msg: String) {
+        android.util.Log.i("MatcherDiag", msg)
+        runCatching {
+            diagDir?.let { java.io.File(it, "matcher-diag.txt").appendText(msg + "\n") }
+        }
     }
 
     override fun match(chunk: SpeechChunk): MatchResult {
@@ -70,6 +79,8 @@ class SherpaSpeakerMatcher(
             MatcherMode.ME -> if (manager.verify(ME_ID, embedding, threshold)) ME_ID else null
         }
 
+        val bestId = if (mode == MatcherMode.TABLE) manager.search(embedding, 0.0f) else "-"
+        diagLine("segMs=${chunk.endMs - chunk.startMs} bestSim=${"%.3f".format(similarity)} threshold=$threshold sherpaBest=$bestId -> speakerId=$speakerId")
         return MatchResult(speakerId, similarity)
     }
 
@@ -94,5 +105,9 @@ class SherpaSpeakerMatcher(
 
         /** Reserved enrollment id for the single person tracked in [MatcherMode.ME]. */
         const val ME_ID = "me"
+
+        /** TEMP diagnostic (diag-matcher branch): set to the app filesDir so [diagLine] can persist. */
+        @JvmStatic
+        var diagDir: java.io.File? = null
     }
 }

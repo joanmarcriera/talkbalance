@@ -36,6 +36,7 @@ class OnlineClusterMatcher(
     private val embed: (FloatArray) -> FloatArray,
     private val joinThreshold: Float = JOIN_THRESHOLD,
     private val maxSpeakers: Int = MAX_SPEAKERS,
+    private val minSpawnMs: Long = MIN_SPAWN_MS,
 ) : SpeakerMatcher {
 
     /** One discovered voice: its running-mean [centroid] over [count] folded-in embeddings. */
@@ -46,14 +47,19 @@ class OnlineClusterMatcher(
     /** Number of clusters discovered so far (test/diagnostic visibility). */
     val speakerCount: Int get() = clusters.size
 
-    override fun match(chunk: SpeechChunk): MatchResult = assign(embed(chunk.samples))
+    override fun match(chunk: SpeechChunk): MatchResult =
+        assign(embed(chunk.samples), chunk.endMs - chunk.startMs)
 
     /**
      * Pure clustering decision for one already-computed [embedding]. Always returns a non-null
      * [MatchResult.speakerId] (discover mode attributes every voice). [MatchResult.similarity] is the
      * best cosine similarity against the chosen cluster before the update (0 for a brand-new cluster).
+     *
+     * [durationMs] is the chunk's speech length: a *new* speaker is only spawned from a chunk at least
+     * [minSpawnMs] long, so short interjections / laughter fold into the nearest existing voice
+     * instead of inflating the speaker count.
      */
-    fun assign(embedding: FloatArray): MatchResult {
+    fun assign(embedding: FloatArray, durationMs: Long = Long.MAX_VALUE): MatchResult {
         // First voice ever: seed cluster s1.
         if (clusters.isEmpty()) return spawn(embedding).let { MatchResult(it, 0f) }
 
@@ -67,12 +73,14 @@ class OnlineClusterMatcher(
             }
         }
 
-        // Join the best cluster, or — if below threshold and there's room — start a new one.
-        return if (bestSim >= joinThreshold || clusters.size >= maxSpeakers) {
+        // Spawn a new voice only for a confidently-novel AND long-enough chunk; otherwise fold into
+        // the nearest cluster (this also handles the maxSpeakers cap).
+        val canSpawn = bestSim < joinThreshold && clusters.size < maxSpeakers && durationMs >= minSpawnMs
+        return if (canSpawn) {
+            MatchResult(spawn(embedding), 0f)
+        } else {
             update(clusters[bestIdx], embedding)
             MatchResult(clusters[bestIdx].id, bestSim)
-        } else {
-            MatchResult(spawn(embedding), 0f)
         }
     }
 
@@ -99,10 +107,17 @@ class OnlineClusterMatcher(
          * speaker. Deliberately lower than the enrolled match threshold because live-to-live
          * similarity is noisier than live-vs-enrollment-centroid. Start ~0.5 and tune on device.
          */
-        const val JOIN_THRESHOLD: Float = 0.5f
+        const val JOIN_THRESHOLD: Float = 0.32f
 
         /** Hard cap on discovered speakers; beyond this, voices fold into the nearest cluster. */
         const val MAX_SPEAKERS: Int = 10
+
+        /**
+         * Minimum speech length for a chunk to be allowed to spawn a *new* speaker. Short bursts
+         * (one-word interjections, laughter, cross-talk fragments) fold into the nearest existing
+         * voice instead — the main cause of speaker-count inflation on real, lively conversation.
+         */
+        const val MIN_SPAWN_MS: Long = 800L
 
         /**
          * Builds a device-backed matcher over the shared [extractor]. The embedding extraction here
@@ -112,6 +127,7 @@ class OnlineClusterMatcher(
             extractor: SpeakerEmbeddingExtractor,
             joinThreshold: Float = JOIN_THRESHOLD,
             maxSpeakers: Int = MAX_SPEAKERS,
+            minSpawnMs: Long = MIN_SPAWN_MS,
             sampleRate: Int = 16_000,
         ): OnlineClusterMatcher = OnlineClusterMatcher(
             embed = { samples ->
@@ -126,6 +142,7 @@ class OnlineClusterMatcher(
             },
             joinThreshold = joinThreshold,
             maxSpeakers = maxSpeakers,
+            minSpawnMs = minSpawnMs,
         )
     }
 }

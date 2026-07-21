@@ -33,7 +33,7 @@ class SettingsRepository(context: Context) {
     }
 
     val matchThreshold: Flow<Float> = dataStore.data.map { preferences ->
-        preferences[matchThresholdKey] ?: 0.50f
+        preferences[matchThresholdKey] ?: 0.42f
     }
 
     val keepScreenOn: Flow<Boolean> = dataStore.data.map { preferences ->
@@ -57,7 +57,7 @@ class SettingsRepository(context: Context) {
 
     suspend fun setMatchThreshold(threshold: Float) {
         // Clamp value between 0.30 and 0.80
-        val clamped = threshold.coerceIn(0.30f, 0.80f)
+        val clamped = threshold.coerceIn(0.20f, 0.80f)
         dataStore.edit { preferences ->
             preferences[matchThresholdKey] = clamped
         }

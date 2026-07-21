@@ -135,12 +135,12 @@ fun SettingsScreen(
                         Slider(
                             value = matchThreshold,
                             onValueChange = { viewModel.setMatchThreshold(it) },
-                            valueRange = 0.30f..0.80f,
+                            valueRange = 0.20f..0.80f,
                             steps = 10,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Text(
-                            "Higher = stricter matching (fewer false matches). Controls speaker recognition accuracy.",
+                            "Speaker sensitivity. In Discover: higher = more separate speakers (splits more); lower = merges similar voices into one. Restart a session to apply.",
                             style = MaterialTheme.typography.labelSmall,
                         )
                     }

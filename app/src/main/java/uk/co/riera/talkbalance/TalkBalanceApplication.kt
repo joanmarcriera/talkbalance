@@ -24,6 +24,7 @@ class TalkBalanceApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        uk.co.riera.talkbalance.ml.SherpaSpeakerMatcher.diagDir = filesDir // TEMP diag-matcher branch
         sherpaEngines = SherpaEngines(assets)
         applicationScope.launch {
             sherpaEngines.initialize()

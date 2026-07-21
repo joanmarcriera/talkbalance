@@ -298,8 +298,13 @@ class SessionController private constructor(
                 val speakerIdToPersonId: Map<String, Long>
 
                 if (mode == Mode.DISCOVER) {
+                    // Discover uses the same tunable threshold slider (Settings > Developer) so it
+                    // can be dialled in live: higher = splits more (more speakers), lower = merges more.
                     matcher = withContext(PIPELINE_DISPATCHER) {
-                        uk.co.riera.talkbalance.ml.OnlineClusterMatcher.create(extractor)
+                        uk.co.riera.talkbalance.ml.OnlineClusterMatcher.create(
+                            extractor,
+                            joinThreshold = threshold,
+                        )
                     }
                     closeMatcher = {}
                     displayNames = emptyMap() // UI assigns "Speaker N" labels itself.
