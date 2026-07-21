@@ -42,6 +42,14 @@ sealed interface EnrollmentResult {
          * to show progress ("got 3.2 s of 5 s").
          */
         data class TooShort(override val message: String, val netSpeechMs: Long) : Failure
+
+        /**
+         * The shared native speech engine is currently held by a live session, so enrollment can't
+         * safely touch the single-owner VAD/extractor. The user must finish the session first.
+         */
+        data class Busy(
+            override val message: String = "Finish the session first, then add a person.",
+        ) : Failure
     }
 }
 

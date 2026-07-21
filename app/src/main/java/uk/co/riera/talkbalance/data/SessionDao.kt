@@ -37,4 +37,19 @@ interface SessionDao {
 
     @Query("DELETE FROM speaker_stats")
     suspend fun deleteAllStats()
+
+    /**
+     * Deletes every persons/sessions/speaker_stats row in a single transaction, so a "delete all
+     * data" wipe can never leave the DB half-cleared. `persons` is included here (rather than via
+     * [PersonDao]) so all three deletes share one atomic transaction.
+     */
+    @Transaction
+    suspend fun deleteAllPersonsSessionsStatsTx() {
+        deleteAllPersons()
+        deleteAllSessions()
+        deleteAllStats()
+    }
+
+    @Query("DELETE FROM persons")
+    suspend fun deleteAllPersons()
 }

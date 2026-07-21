@@ -14,6 +14,15 @@ data class SherpaEngineSnapshot(
     val initializationMs: Long,
 )
 
+/**
+ * Thrown when a caller asks for the shared native engines while another owner (a live session or an
+ * in-flight enrollment) already holds the [SherpaEngines.EngineLease]. The sherpa-onnx `Vad` /
+ * `SpeakerEmbeddingExtractor` are single-instance, single-owner; overlapping `reset/accept/flush/
+ * compute` from two owners is the JNI-contract violation the lease exists to prevent.
+ */
+class EngineBusyException(val holder: String) :
+    IllegalStateException("Speech engine is busy (held by \"$holder\")")
+
 class SherpaEngines(
     private val assetManager: AssetManager,
 ) {
@@ -22,6 +31,19 @@ class SherpaEngines(
 
     private var vad: Vad? = null
     private var extractor: SpeakerEmbeddingExtractor? = null
+
+    /** Single-owner mutual exclusion over the shared native engines. */
+    private val leaseHolder = EngineLeaseHolder()
+
+    /**
+     * Non-blocking, exclusive acquire of the shared engines. Returns a lease, or null if another
+     * owner already holds it. Session and enrollment must both go through this before touching the
+     * shared [Vad]/[SpeakerEmbeddingExtractor].
+     */
+    fun tryAcquireLease(owner: String): EngineLeaseHolder.Lease? = leaseHolder.tryAcquire(owner)
+
+    /** Name of the current lease owner, or null when free. For diagnostics / busy messages. */
+    val leaseOwner: String? get() = leaseHolder.owner
 
     @Synchronized
     fun initialize(): Result<SherpaEngineSnapshot> = runCatching {

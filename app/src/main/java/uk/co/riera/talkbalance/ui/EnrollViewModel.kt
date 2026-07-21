@@ -113,23 +113,34 @@ class EnrollViewModel(
             _state.value = State.Failure("Speech engine is still starting — try again in a moment.")
             return
         }
-        val processor = EnrollmentProcessor.create(engines.requireVad(), engines.requireExtractor())
-        when (val result = processor.process(samples)) {
-            is EnrollmentResult.Failure -> _state.value = State.Failure(result.message)
-            is EnrollmentResult.Success -> {
-                val warning = runCatching {
-                    processor.checkSimilarVoice(result, loadProfiles(personDao))
-                }.getOrNull()
-                personDao.insert(
-                    PersonEntity(
-                        name = name,
-                        colorIndex = colorIndex,
-                        embeddings = EmbeddingCodec.encode(result.embeddings),
-                        createdAtEpochMs = System.currentTimeMillis(),
-                    ),
-                )
-                _state.value = State.Success(name, warning)
+        // Exclusive access to the single-owner native engines: if a live session holds them, refuse
+        // rather than driving the shared VAD/extractor concurrently (Busy is surfaced verbatim).
+        val lease = engines.tryAcquireLease(LEASE_OWNER)
+        if (lease == null) {
+            _state.value = State.Failure(EnrollmentResult.Failure.Busy().message)
+            return
+        }
+        try {
+            val processor = EnrollmentProcessor.create(engines.requireVad(), engines.requireExtractor())
+            when (val result = processor.process(samples)) {
+                is EnrollmentResult.Failure -> _state.value = State.Failure(result.message)
+                is EnrollmentResult.Success -> {
+                    val warning = runCatching {
+                        processor.checkSimilarVoice(result, loadProfiles(personDao))
+                    }.getOrNull()
+                    personDao.insert(
+                        PersonEntity(
+                            name = name,
+                            colorIndex = colorIndex,
+                            embeddings = EmbeddingCodec.encode(result.embeddings),
+                            createdAtEpochMs = System.currentTimeMillis(),
+                        ),
+                    )
+                    _state.value = State.Success(name, warning)
+                }
             }
+        } finally {
+            lease.release()
         }
     }
 
@@ -145,6 +156,9 @@ class EnrollViewModel(
     companion object {
         /** Target enrollment recording length. The processor needs ≥5 s of net (trimmed) speech. */
         const val RECORD_MS: Long = 10_000L
+
+        /** Engine-lease owner tag for enrollment (see [SherpaEngines.tryAcquireLease]). */
+        private const val LEASE_OWNER = "enrollment"
 
         fun factory(engines: SherpaEngines, personDao: PersonDao): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
