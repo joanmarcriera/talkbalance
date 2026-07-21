@@ -44,8 +44,18 @@ class EnrollViewModel(
         /** Buffer captured, running the (native) VAD-trim + embedding off the main thread. */
         data object Processing : State
 
-        /** Enrolled and stored. [warning] present when the voice is close to an existing profile. */
-        data class Success(val name: String, val warning: SimilarVoiceWarning?) : State
+        /**
+         * Enrolled and stored as a new person with id [personId]. [warning] present when the voice
+         * is close to an existing profile; [mergedIntoName] is set once the user has instead chosen
+         * to fold this recording into that matched person via [addToExistingPerson] (at which point
+         * [warning] is cleared — the standalone person created for this recording no longer exists).
+         */
+        data class Success(
+            val name: String,
+            val personId: Long,
+            val warning: SimilarVoiceWarning?,
+            val mergedIntoName: String? = null,
+        ) : State
 
         /** Enrollment failed; [message] is user-facing (too quiet / too short / an error). */
         data class Failure(val message: String) : State
@@ -74,6 +84,26 @@ class EnrollViewModel(
     /** Reset to Idle so the user can retry after a failure or a success. */
     fun reset() {
         _state.value = State.Idle
+    }
+
+    /**
+     * Marc's exact duplicate-enrollment case: instead of keeping the just-created person, fold this
+     * recording's embeddings into the matched person from [State.Success.warning] and drop the new
+     * one. Reuses [PersonDao.mergePersons] with the new person as the (stats-free) source and the
+     * matched person as the target, so its embeddings combine the same way a manual "Merge into…"
+     * would. No-op if the current state isn't a [State.Success] with a warning.
+     */
+    fun addToExistingPerson() {
+        val current = _state.value as? State.Success ?: return
+        val warning = current.warning ?: return
+        viewModelScope.launch {
+            try {
+                personDao.mergePersons(sourceId = current.personId, targetId = warning.personId)
+                _state.value = current.copy(warning = null, mergedIntoName = warning.name)
+            } catch (e: Throwable) {
+                _state.value = State.Failure(e.message ?: "Couldn't add to ${warning.name}")
+            }
+        }
     }
 
     /** Captures [RECORD_MS] of mic audio into one buffer, publishing live level + elapsed. */
@@ -128,7 +158,7 @@ class EnrollViewModel(
                     val warning = runCatching {
                         processor.checkSimilarVoice(result, loadProfiles(personDao))
                     }.getOrNull()
-                    personDao.insert(
+                    val id = personDao.insert(
                         PersonEntity(
                             name = name,
                             colorIndex = colorIndex,
@@ -136,7 +166,7 @@ class EnrollViewModel(
                             createdAtEpochMs = System.currentTimeMillis(),
                         ),
                     )
-                    _state.value = State.Success(name, warning)
+                    _state.value = State.Success(name, id, warning)
                 }
             }
         } finally {

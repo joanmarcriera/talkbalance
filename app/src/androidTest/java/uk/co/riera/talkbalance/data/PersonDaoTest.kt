@@ -17,12 +17,14 @@ import org.junit.runner.RunWith
 class PersonDaoTest {
     private lateinit var db: AppDatabase
     private lateinit var dao: PersonDao
+    private lateinit var sessionDao: SessionDao
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).build()
         dao = db.personDao()
+        sessionDao = db.sessionDao()
     }
 
     @After
@@ -142,5 +144,98 @@ class PersonDaoTest {
 
         val afterDelete = dao.observeAll().first()
         assertEquals(0, afterDelete.size)
+    }
+
+    // --- mergePersons ---------------------------------------------------------------------------
+
+    private fun person(name: String, embeddings: Array<FloatArray>) = PersonEntity(
+        name = name,
+        colorIndex = 0,
+        embeddings = EmbeddingCodec.encode(embeddings),
+        createdAtEpochMs = 0L,
+    )
+
+    @Test
+    fun mergePersonsReassignsStatsToTargetAndDeletesSource() = runBlocking {
+        val sourceId = dao.insert(person("Kid (dup)", arrayOf(floatArrayOf(1f))))
+        val targetId = dao.insert(person("Kid", arrayOf(floatArrayOf(2f))))
+
+        val session = SessionEntity(
+            startedAtEpochMs = 1000L,
+            endedAtEpochMs = 2000L,
+            mode = "table",
+            durationMs = 1000L,
+        )
+        sessionDao.insertSessionWithStats(
+            session,
+            listOf(
+                SpeakerStatEntity(
+                    sessionId = 0,
+                    personId = sourceId,
+                    isEveryoneElse = false,
+                    talkMs = 500L,
+                    turns = 2,
+                    longestMonologueMs = 300L,
+                ),
+            ),
+        )
+
+        dao.mergePersons(sourceId = sourceId, targetId = targetId)
+
+        val sessions = sessionDao.observeSessionsNewestFirst().first()
+        val withStats = sessionDao.getSessionWithStats(sessions[0].id)
+        assertEquals(1, withStats?.stats?.size)
+        assertEquals(targetId, withStats?.stats?.first()?.personId)
+
+        assertNull(dao.getById(sourceId))
+        assertEquals("Kid", dao.getById(targetId)?.name)
+    }
+
+    @Test
+    fun mergePersonsCombinesEmbeddingsTargetFirst() = runBlocking {
+        val sourceId = dao.insert(person("Source", arrayOf(floatArrayOf(3f))))
+        val targetId = dao.insert(person("Target", arrayOf(floatArrayOf(1f), floatArrayOf(2f))))
+
+        dao.mergePersons(sourceId = sourceId, targetId = targetId)
+
+        val combined = EmbeddingCodec.decode(dao.getById(targetId)!!.embeddings)
+        assertEquals(3, combined.size)
+        assertEquals(1f, combined[0][0], 0f)
+        assertEquals(2f, combined[1][0], 0f)
+        assertEquals(3f, combined[2][0], 0f)
+    }
+
+    @Test
+    fun mergePersonsCapsCombinedEmbeddingsAtEightPreferringTarget() = runBlocking {
+        val sourceId = dao.insert(person("Source", Array(5) { floatArrayOf(100f + it) }))
+        val targetId = dao.insert(person("Target", Array(6) { floatArrayOf(it.toFloat()) }))
+
+        dao.mergePersons(sourceId = sourceId, targetId = targetId)
+
+        val combined = EmbeddingCodec.decode(dao.getById(targetId)!!.embeddings)
+        assertEquals(8, combined.size)
+        for (i in 0 until 6) assertEquals(i.toFloat(), combined[i][0], 0f)
+        assertEquals(100f, combined[6][0], 0f)
+        assertEquals(101f, combined[7][0], 0f)
+    }
+
+    @Test
+    fun mergePersonsIsNoOpWhenSourceEqualsTarget() = runBlocking {
+        val id = dao.insert(person("Solo", arrayOf(floatArrayOf(9f))))
+
+        dao.mergePersons(sourceId = id, targetId = id)
+
+        val retrieved = dao.getById(id)
+        assertEquals("Solo", retrieved?.name)
+        assertEquals(1, EmbeddingCodec.decode(retrieved!!.embeddings).size)
+    }
+
+    @Test
+    fun mergePersonsIsNoOpWhenSourceMissing() = runBlocking {
+        val targetId = dao.insert(person("Target", arrayOf(floatArrayOf(1f))))
+
+        dao.mergePersons(sourceId = 999L, targetId = targetId)
+
+        assertEquals(1, EmbeddingCodec.decode(dao.getById(targetId)!!.embeddings).size)
     }
 }

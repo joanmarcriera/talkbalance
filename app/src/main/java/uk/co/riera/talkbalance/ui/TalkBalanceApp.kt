@@ -24,9 +24,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
@@ -43,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,6 +76,7 @@ import uk.co.riera.talkbalance.session.balanceTarget
 import uk.co.riera.talkbalance.settings.SettingsScreen
 import uk.co.riera.talkbalance.settings.SettingsViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /** Top-level navigation state for the real session flow. */
@@ -179,10 +184,25 @@ private fun HomeScreen(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as TalkBalanceApplication
-    val people by app.database.personDao().observeAll().collectAsStateWithLifecycle(emptyList())
+    val personDao = app.database.personDao()
+    val people by personDao.observeAll().collectAsStateWithLifecycle(emptyList())
+    val scope = rememberCoroutineScope()
 
     var mode by remember { mutableStateOf(Mode.TABLE) }
     var meId by remember { mutableStateOf<Long?>(null) }
+
+    // Which row's overflow menu is open, if any.
+    var menuForPersonId by remember { mutableStateOf<Long?>(null) }
+    // Delete flow: the person pending a confirm dialog.
+    var pendingDelete by remember { mutableStateOf<PersonEntity?>(null) }
+    // Merge flow: the row "Merge into…" was tapped on, then the target picked for it.
+    var mergeSource by remember { mutableStateOf<PersonEntity?>(null) }
+    var mergeTarget by remember { mutableStateOf<PersonEntity?>(null) }
+
+    fun cancelMerge() {
+        mergeSource = null
+        mergeTarget = null
+    }
 
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -215,6 +235,17 @@ private fun HomeScreen(
                     selectable = mode == Mode.ME,
                     selected = meId == person.id,
                     onSelect = { meId = person.id },
+                    menuExpanded = menuForPersonId == person.id,
+                    onMenuExpandedChange = { expanded -> menuForPersonId = if (expanded) person.id else null },
+                    canMerge = people.size > 1,
+                    onDeleteClick = {
+                        menuForPersonId = null
+                        pendingDelete = person
+                    },
+                    onMergeClick = {
+                        menuForPersonId = null
+                        mergeSource = person
+                    },
                 )
             }
         }
@@ -235,6 +266,45 @@ private fun HomeScreen(
             modifier = Modifier.fillMaxWidth().height(56.dp),
         ) { Text("Start", style = MaterialTheme.typography.titleMedium) }
     }
+
+    pendingDelete?.let { person ->
+        DeletePersonDialog(
+            name = person.name,
+            onConfirm = {
+                pendingDelete = null
+                scope.launch {
+                    personDao.delete(person)
+                    if (meId == person.id) meId = null
+                }
+            },
+            onDismiss = { pendingDelete = null },
+        )
+    }
+
+    val source = mergeSource
+    if (source != null && mergeTarget == null) {
+        MergeTargetPickerDialog(
+            sourceName = source.name,
+            candidates = people.filter { it.id != source.id },
+            onPick = { mergeTarget = it },
+            onDismiss = { cancelMerge() },
+        )
+    }
+    val target = mergeTarget
+    if (source != null && target != null) {
+        MergeConfirmDialog(
+            sourceName = source.name,
+            targetName = target.name,
+            onConfirm = {
+                cancelMerge()
+                scope.launch {
+                    personDao.mergePersons(sourceId = source.id, targetId = target.id)
+                    if (meId == source.id) meId = target.id
+                }
+            },
+            onDismiss = { cancelMerge() },
+        )
+    }
 }
 
 @Composable
@@ -243,6 +313,11 @@ private fun PersonRow(
     selectable: Boolean,
     selected: Boolean,
     onSelect: () -> Unit,
+    menuExpanded: Boolean,
+    onMenuExpandedChange: (Boolean) -> Unit,
+    canMerge: Boolean,
+    onDeleteClick: () -> Unit,
+    onMergeClick: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().clickable(enabled = selectable) { onSelect() }.padding(vertical = 4.dp),
@@ -252,7 +327,93 @@ private fun PersonRow(
         Box(Modifier.size(20.dp).clip(CircleShape).background(colorForIndex(person.colorIndex)))
         Text(person.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
         if (selectable) RadioButton(selected = selected, onClick = onSelect)
+
+        Box {
+            IconButton(
+                onClick = { onMenuExpandedChange(true) },
+                modifier = Modifier.semantics { contentDescription = "More options for ${person.name}" },
+            ) { Text("⋮", style = MaterialTheme.typography.titleLarge) }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { onMenuExpandedChange(false) }) {
+                DropdownMenuItem(
+                    text = { Text("Merge into…") },
+                    enabled = canMerge,
+                    onClick = onMergeClick,
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                    onClick = onDeleteClick,
+                )
+            }
+        }
     }
+}
+
+@Composable
+private fun DeletePersonDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete $name?") },
+        text = {
+            Text(
+                "Removes $name's voice profile. Past session stats are kept but lose the name.",
+            )
+        },
+        confirmButton = { Button(onClick = onConfirm) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun MergeTargetPickerDialog(
+    sourceName: String,
+    candidates: List<PersonEntity>,
+    onPick: (PersonEntity) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Merge $sourceName into…") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                candidates.forEach { candidate ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(candidate) }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Box(Modifier.size(20.dp).clip(CircleShape).background(colorForIndex(candidate.colorIndex)))
+                        Text(candidate.name, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun MergeConfirmDialog(
+    sourceName: String,
+    targetName: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Merge $sourceName into $targetName?") },
+        text = {
+            Text(
+                "Combines $sourceName's voice recordings into $targetName and moves " +
+                    "$sourceName's session stats to $targetName.",
+            )
+        },
+        confirmButton = { Button(onClick = onConfirm) { Text("Merge") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 // --- Enrollment -----------------------------------------------------------------------------------
@@ -350,13 +511,24 @@ private fun EnrollScreen(modifier: Modifier = Modifier, nonce: Int, onDone: () -
                 }
             }
             is EnrollViewModel.State.Success -> {
-                Text("Added ${s.name}.", style = MaterialTheme.typography.titleMedium)
-                s.warning?.let {
-                    Card(Modifier.fillMaxWidth()) {
-                        Text(
-                            "${it.message}. They may be confused during a session.",
-                            Modifier.padding(16.dp),
-                        )
+                val mergedInto = s.mergedIntoName
+                if (mergedInto != null) {
+                    Text("Added to $mergedInto.", style = MaterialTheme.typography.titleMedium)
+                } else {
+                    Text("Added ${s.name}.", style = MaterialTheme.typography.titleMedium)
+                    s.warning?.let { warning ->
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(
+                                Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Text("${warning.message}. They may be confused during a session.")
+                                OutlinedButton(
+                                    onClick = { vm.addToExistingPerson() },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) { Text("Add to ${warning.name} instead") }
+                            }
+                        }
                     }
                 }
                 Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
