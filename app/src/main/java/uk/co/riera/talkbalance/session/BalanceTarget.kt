@@ -23,7 +23,9 @@ fun balanceTarget(mode: Mode, enrolledCount: Int): BalanceTarget = when (mode) {
         perCategoryPercent = 50,
         copy = "Balanced would be about 50% each — you vs everyone else.",
     )
-    Mode.TABLE -> {
+    // Table (enrolled people) and Discover (discovered speakers) both compare N categories, so a
+    // fair split is 100 / N each.
+    Mode.TABLE, Mode.DISCOVER -> {
         val n = enrolledCount.coerceAtLeast(1)
         val pct = (100.0 / n).roundToInt()
         BalanceTarget(

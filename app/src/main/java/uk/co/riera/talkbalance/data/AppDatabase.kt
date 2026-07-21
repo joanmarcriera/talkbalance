@@ -7,7 +7,9 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [PersonEntity::class, SessionEntity::class, SpeakerStatEntity::class],
-    version = 1,
+    // v2: SpeakerStatEntity.label (discovered/renamed speaker names). Pre-release, so a destructive
+    // migration (drop + recreate) is acceptable — there are no real users' sessions to preserve.
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -24,7 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "talkbalance.db",
-                ).build().also { INSTANCE = it }
+                ).fallbackToDestructiveMigration().build().also { INSTANCE = it }
             }
         }
     }

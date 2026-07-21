@@ -13,6 +13,7 @@ import uk.co.riera.talkbalance.data.SessionDao
 import uk.co.riera.talkbalance.ml.EngineBusyException
 import uk.co.riera.talkbalance.ml.SherpaEngines
 import uk.co.riera.talkbalance.ml.SherpaSpeakerMatcher
+import uk.co.riera.talkbalance.session.DiscoveredSpeakerLabels
 import uk.co.riera.talkbalance.session.Mode
 import uk.co.riera.talkbalance.session.PersistState
 import uk.co.riera.talkbalance.session.SessionController
@@ -46,18 +47,32 @@ class SessionViewModel(
         data class Failed(val message: String) : Phase
     }
 
-    /** Display name + palette index for one enrolled speaker id the engine uses. */
+    /** Display name + palette index for one speaker id the engine uses. */
     data class SpeakerMeta(val name: String, val colorIndex: Int)
 
     private var controller: SessionController? = null
+    private var mode: Mode = Mode.DISCOVER
 
     /**
      * speakerId (as the engine uses it: person `id.toString()` in Table, `"me"` in Me) -> its
      * name + colour, so the live bars and the report can paint each speaker in their enrolled
-     * colour. The everyone-else bucket is absent (painted grey by the UI).
+     * colour. The everyone-else bucket is absent (painted grey by the UI). For Discover mode this is
+     * empty (labels are dynamic — see [displayMeta]).
      */
     var metaBySpeakerId: Map<String, SpeakerMeta> = emptyMap()
         private set
+
+    // Discover mode's live labelling state: first-seen speaker order + user renames.
+    private var discoverOrder: List<String> = emptyList()
+    private val _renames = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Reactive speakerId -> [SpeakerMeta] for the live bars, graphs and report. Static for enrolled
+     * modes; for Discover it updates as new voices are discovered ("Speaker N") and as the user
+     * renames them. Both the session screen and the report observe this so a rename repaints instantly.
+     */
+    private val _displayMeta = MutableStateFlow<Map<String, SpeakerMeta>>(emptyMap())
+    val displayMeta: StateFlow<Map<String, SpeakerMeta>> = _displayMeta.asStateFlow()
 
     private val _phase = MutableStateFlow<Phase>(Phase.Starting)
     val phase: StateFlow<Phase> = _phase.asStateFlow()
@@ -76,6 +91,7 @@ class SessionViewModel(
     /** Start a session in [mode]. [mePersonId] required for Me mode. Call once per instance. */
     fun start(mode: Mode, mePersonId: Long?) {
         if (controller != null) return
+        this.mode = mode
         viewModelScope.launch {
             try {
                 if (!engines.isInitialized) {
@@ -91,7 +107,9 @@ class SessionViewModel(
                     Mode.ME -> people.firstOrNull { it.id == mePersonId }?.let {
                         mapOf(SherpaSpeakerMatcher.ME_ID to SpeakerMeta(it.name, it.colorIndex))
                     } ?: emptyMap()
+                    Mode.DISCOVER -> emptyMap() // labels are dynamic (Speaker N + renames).
                 }
+                _displayMeta.value = metaBySpeakerId
                 val c = SessionController.create(
                     engines = engines,
                     personDao = personDao,
@@ -102,7 +120,12 @@ class SessionViewModel(
                 )
                 controller = c
                 // Relay the controller's flows into our own so the UI subscribes once.
-                viewModelScope.launch { c.uiState.collect { _live.value = it } }
+                viewModelScope.launch {
+                    c.uiState.collect {
+                        _live.value = it
+                        if (mode == Mode.DISCOVER) onDiscoverState(it)
+                    }
+                }
                 viewModelScope.launch { c.error.collect { if (it != null) _error.value = it } }
                 viewModelScope.launch { c.persistState.collect { _persistState.value = it } }
                 c.start()
@@ -113,6 +136,45 @@ class SessionViewModel(
                 _phase.value = Phase.Failed(e.message ?: "Could not start the session.")
             }
         }
+    }
+
+    /**
+     * Fold a live Discover state into the first-seen order (from the segment timeline, oldest first)
+     * and refresh the dynamic labels. Called on every live update while in Discover mode.
+     */
+    private fun onDiscoverState(state: SessionUiState) {
+        val seen = state.segments.map { it.speakerId }.distinct()
+        val merged = DiscoveredSpeakerLabels.mergeOrder(discoverOrder, seen)
+        if (merged != discoverOrder) {
+            discoverOrder = merged
+            recomputeDiscoverMeta()
+        }
+    }
+
+    /**
+     * Rename a discovered speaker (Discover mode only). Applies immediately to the live bars, the
+     * timeline and the report via [displayMeta]; a blank name clears back to the "Speaker N" default.
+     * When the session has already finished, re-saves so the new name persists in the report record.
+     */
+    fun rename(speakerId: String, newName: String) {
+        if (mode != Mode.DISCOVER) return
+        val trimmed = newName.trim()
+        _renames.value = if (trimmed.isEmpty()) {
+            _renames.value - speakerId
+        } else {
+            _renames.value + (speakerId to trimmed)
+        }
+        recomputeDiscoverMeta()
+        if (_phase.value is Phase.Finished) controller?.resaveWithCurrentLabels()
+    }
+
+    /** Rebuild the Discover display meta + push the final labels to the controller for persistence. */
+    private fun recomputeDiscoverMeta() {
+        val labels = DiscoveredSpeakerLabels(discoverOrder, _renames.value)
+        _displayMeta.value = discoverOrder.associateWith { id ->
+            SpeakerMeta(labels.label(id), labels.colorIndex(id))
+        }
+        controller?.speakerLabels = discoverOrder.associateWith { labels.label(it) }
     }
 
     /** Stop the session; transitions to [Phase.Finished] with the persisted result. */

@@ -20,6 +20,13 @@ enum class Mode(val everyoneElseLabel: String) {
 
     /** Me Mode: only "me" is enrolled; everything not-me is "Others". */
     ME("Others"),
+
+    /**
+     * Discover Mode (the default): no enrollment. An [uk.co.riera.talkbalance.ml.OnlineClusterMatcher]
+     * discovers voices live and attributes **every** chunk to a discovered speaker id ("s1", "s2", …),
+     * so the "everyone else" bucket never appears. The label here is only a never-used fallback.
+     */
+    DISCOVER("Others"),
 }
 
 /** One bar in the live UI, already resolved to a display label with its talk-share computed. */
@@ -42,6 +49,8 @@ data class SessionUiState(
     val isSpeechActive: Boolean,
     /** Per-speaker bars, sorted by [SpeakerShare.share] descending (everyone-else last on ties). */
     val speakers: List<SpeakerShare>,
+    /** Recent attributed segments (oldest first, capped) for the live timeline ribbon. */
+    val segments: List<TalkSegment> = emptyList(),
 ) {
     companion object {
         fun idle(): SessionUiState =
@@ -61,6 +70,8 @@ data class SessionResult(
     val durationMs: Long,
     val mode: Mode,
     val speakers: List<SpeakerStat>,
+    /** Whole-session attributed timeline (capped) for the report's timeline graph. */
+    val segments: List<TalkSegment> = emptyList(),
 )
 
 /**
@@ -147,12 +158,14 @@ class SessionEngine(
         speechActive = false
         state = EngineState.ENDED
         emit()
+        val finalSnapshot = stats.snapshot()
         return SessionResult(
             startedAtMs = startedAtMs,
             endedAtMs = endedAtMs,
             durationMs = endedAtMs - startedAtMs,
             mode = mode,
-            speakers = stats.snapshot().speakers,
+            speakers = finalSnapshot.speakers,
+            segments = finalSnapshot.segments,
         )
     }
 
@@ -193,6 +206,7 @@ class SessionEngine(
             elapsedMs = elapsedMs(),
             isSpeechActive = speechActive,
             speakers = shares,
+            segments = snapshot.segments,
         )
     }
 

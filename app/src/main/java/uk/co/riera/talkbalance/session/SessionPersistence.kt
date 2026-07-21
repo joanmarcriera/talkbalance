@@ -29,6 +29,8 @@ object SessionPersistence {
     fun toEntities(
         result: SessionResult,
         speakerIdToPersonId: Map<String, Long>,
+        /** speakerId -> final display label; persisted for discovered speakers (else null). */
+        speakerLabels: Map<String, String> = emptyMap(),
     ): Pair<SessionEntity, List<SpeakerStatEntity>> {
         val session = SessionEntity(
             startedAtEpochMs = result.startedAtMs,
@@ -45,6 +47,7 @@ object SessionPersistence {
                 talkMs = stat.talkMs,
                 turns = stat.turns,
                 longestMonologueMs = stat.longestMonologueMs,
+                label = if (isEveryoneElse) null else speakerLabels[stat.speakerId],
             )
         }
         return session to stats
@@ -54,5 +57,6 @@ object SessionPersistence {
     fun modeTag(mode: Mode): String = when (mode) {
         Mode.TABLE -> "table"
         Mode.ME -> "me"
+        Mode.DISCOVER -> "discover"
     }
 }
