@@ -72,6 +72,57 @@ android {
     testOptions { unitTests { isReturnDefaultValues = true } }
 }
 
+// --- Release-signing distribution gate -------------------------------------------------------------
+//
+// The graceful-unsigned path above is kept ON PURPOSE so contributors / CI without the keystore
+// secrets can still run a plain `assembleRelease` (it just produces app-release-unsigned.apk).
+//
+// A build meant for DISTRIBUTION must not silently ship that unsigned artifact. `verifyReleaseSigning`
+// fails fast if the release output is missing or unsigned, so the documented release command is:
+//
+//     ./gradlew assembleRelease verifyReleaseSigning
+//
+// Passing `-PrequireSigning` additionally (a) refuses to configure a release without the signing
+// env vars and (b) auto-runs the verification after assembleRelease — use it on the release/CI path.
+// See RELEASE.md.
+val requireSigning = project.hasProperty("requireSigning")
+// Recomputed here because the `hasSigning` val above is scoped to the android {} block.
+val signingEnvPresent = System.getenv("TALKBALANCE_KEYSTORE_PATH") != null &&
+    System.getenv("TALKBALANCE_KEYSTORE_PASSWORD") != null &&
+    System.getenv("TALKBALANCE_KEY_ALIAS") != null
+if (requireSigning && !signingEnvPresent) {
+    throw GradleException(
+        "requireSigning was set but signing env vars are absent. Set TALKBALANCE_KEYSTORE_PATH, " +
+            "TALKBALANCE_KEYSTORE_PASSWORD and TALKBALANCE_KEY_ALIAS before a distributable release build.",
+    )
+}
+
+tasks.register("verifyReleaseSigning") {
+    description = "Fails if the release APK is missing or was produced unsigned (distribution gate)."
+    group = "verification"
+    mustRunAfter("assembleRelease")
+    doLast {
+        val releaseDir = layout.buildDirectory.dir("outputs/apk/release").get().asFile
+        val signed = releaseDir.resolve("app-release.apk")
+        val unsigned = releaseDir.resolve("app-release-unsigned.apk")
+        when {
+            unsigned.exists() && !signed.exists() -> throw GradleException(
+                "Release build produced only ${unsigned.name} (UNSIGNED). Set the TALKBALANCE_KEYSTORE_* / " +
+                    "TALKBALANCE_KEY_ALIAS env vars and re-run `./gradlew assembleRelease verifyReleaseSigning`.",
+            )
+            !signed.exists() -> throw GradleException(
+                "Expected a signed ${signed.name} at ${releaseDir.absolutePath}, but it is absent. " +
+                    "Run `./gradlew assembleRelease verifyReleaseSigning` with signing env vars set.",
+            )
+        }
+        logger.lifecycle("verifyReleaseSigning: signed ${signed.name} present at ${releaseDir.absolutePath}")
+    }
+}
+
+if (requireSigning) {
+    tasks.matching { it.name == "assembleRelease" }.configureEach { finalizedBy("verifyReleaseSigning") }
+}
+
 dependencies {
     implementation(files("libs/sherpa-onnx-1.13.4.aar"))
     implementation(platform("androidx.compose:compose-bom:2025.05.01"))

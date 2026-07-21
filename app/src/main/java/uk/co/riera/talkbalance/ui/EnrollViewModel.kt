@@ -21,6 +21,8 @@ import uk.co.riera.talkbalance.enroll.EnrollmentResult
 import uk.co.riera.talkbalance.enroll.SimilarVoiceWarning
 import uk.co.riera.talkbalance.enroll.loadProfiles
 import uk.co.riera.talkbalance.ml.SherpaEngines
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.coroutineContext
 import kotlin.math.min
 import kotlin.math.sqrt
 
@@ -64,11 +66,24 @@ class EnrollViewModel(
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
 
+    /** Covers BOTH the mic capture and the (native) processing/insert — one cancellable job. */
     private var recordJob: Job? = null
+
+    /**
+     * Set by [abort]; guards the person insert so an enrollment that was aborted mid-capture or
+     * mid-processing can never insert a [PersonEntity] after the user has left the screen (which
+     * would otherwise race — and survive — a "Delete all data" wipe). Reset when a fresh [record]
+     * begins.
+     */
+    private val aborted = AtomicBoolean(false)
+
+    /** The live capture, tracked so [abort] can release the microphone immediately from any state. */
+    @Volatile private var activeCapture: AudioCapture? = null
 
     /** Begin (or restart) a recording, then process and store under [name] with [colorIndex]. */
     fun record(name: String, colorIndex: Int) {
         if (recordJob?.isActive == true) return
+        aborted.set(false)
         recordJob = viewModelScope.launch {
             val samples = try {
                 captureSamples()
@@ -84,6 +99,26 @@ class EnrollViewModel(
     /** Reset to Idle so the user can retry after a failure or a success. */
     fun reset() {
         _state.value = State.Idle
+    }
+
+    /**
+     * Idempotent hard abort for every teardown path (screen ON_STOP, disposal, [onCleared]). Cancels
+     * the record + processing job, releases the microphone immediately, and latches [aborted] so any
+     * work still unwinding cannot insert a person afterward. Safe to call repeatedly and from any
+     * state — a finished enrollment has nothing to cancel and no mic to release.
+     */
+    fun abort() {
+        aborted.set(true)
+        recordJob?.cancel()
+        recordJob = null
+        activeCapture?.let { runCatching { it.release() } }
+        activeCapture = null
+    }
+
+    /** Foreground-only guarantee: releasing the ViewModel must never leave an invisible microphone. */
+    override fun onCleared() {
+        abort()
+        super.onCleared()
     }
 
     /**
@@ -109,6 +144,7 @@ class EnrollViewModel(
     /** Captures [RECORD_MS] of mic audio into one buffer, publishing live level + elapsed. */
     private suspend fun captureSamples(): FloatArray = withContext(Dispatchers.IO) {
         val capture = AudioCapture()
+        activeCapture = capture
         val collected = ArrayList<FloatArray>()
         var total = 0
         val startMs = System.currentTimeMillis()
@@ -128,6 +164,7 @@ class EnrollViewModel(
             }
         } finally {
             capture.release()
+            activeCapture = null
         }
         val out = FloatArray(total)
         var pos = 0
@@ -158,6 +195,10 @@ class EnrollViewModel(
                     val warning = runCatching {
                         processor.checkSimilarVoice(result, loadProfiles(personDao))
                     }.getOrNull()
+                    // Final guard against the Delete-all race: if the user left during the ~10 s
+                    // capture or this processing, do NOT create the person. `aborted` is latched by
+                    // [abort]; `isActive` catches cooperative cancellation between the checks.
+                    if (aborted.get() || !coroutineContext.isActive) return
                     val id = personDao.insert(
                         PersonEntity(
                             name = name,

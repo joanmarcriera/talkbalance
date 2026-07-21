@@ -173,13 +173,15 @@ class AudioCapture internal constructor(
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
         val source = frameSourceFactory()
-        val openError = source.open()
-        if (openError != null) {
-            sendError(openError)
-            running = false
-            return
-        }
         try {
+            // open() is INSIDE the try/finally: whether it returns an error or throws, the finally
+            // below still closes the source and terminally signals the channel, so a failed open can
+            // neither leak the recorder nor leave a consumer hanging on events.receive().
+            val openError = source.open()
+            if (openError != null) {
+                sendError(openError)
+                return
+            }
             val shorts = ShortArray(chunkSamples)
             while (running) {
                 val n = source.read(shorts)
@@ -195,6 +197,10 @@ class AudioCapture internal constructor(
             sendError(error.message ?: error.javaClass.simpleName, error)
         } finally {
             runCatching { source.close() }
+            // Terminally close the event channel so any consumer blocked on receive() unblocks
+            // instead of waiting forever for frames the (now-dead) thread will never produce. This
+            // is a no-op if stop() already closed it.
+            channel.close()
             running = false
         }
     }
@@ -248,14 +254,28 @@ class AudioCapture internal constructor(
                 return error.message ?: error.javaClass.simpleName
             }
             record = rec
-            if (rec.state != AudioRecord.STATE_INITIALIZED) {
-                return "AudioRecord failed to initialize (state=${rec.state})"
+            // Validate state + startRecording() under one guard so ANY failure path — a bad state or
+            // a startRecording() that throws (e.g. mic policy denial) — releases the just-allocated
+            // AudioRecord and returns a message, rather than leaking the recorder or throwing out of
+            // the capture thread and stranding a consumer.
+            val error: String? = try {
+                when {
+                    rec.state != AudioRecord.STATE_INITIALIZED ->
+                        "AudioRecord failed to initialize (state=${rec.state})"
+                    else -> {
+                        rec.startRecording()
+                        if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                            "AudioRecord did not enter RECORDING state after startRecording()"
+                        } else {
+                            null
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                t.message ?: t.javaClass.simpleName
             }
-            rec.startRecording()
-            if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                return "AudioRecord did not enter RECORDING state after startRecording()"
-            }
-            return null
+            if (error != null) close()
+            return error
         }
 
         override fun read(out: ShortArray): Int = record?.read(out, 0, out.size) ?: AudioRecord.ERROR_INVALID_OPERATION

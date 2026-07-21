@@ -94,4 +94,28 @@ class PersonMergeTest {
         assertEquals(4, combined.size)
         assertArrayEquals(marker(4f), combined[3], 0f)
     }
+
+    // --- combineSpeakerStats (same-session dual-row consolidation) -------------------------------
+
+    @Test
+    fun combineSpeakerStatsSumsTalkAndTurnsButMaxesLongestMonologue() {
+        val combined = combineSpeakerStats(
+            target = SpeakerStatValues(talkMs = 400L, turns = 3, longestMonologueMs = 250L),
+            source = SpeakerStatValues(talkMs = 600L, turns = 2, longestMonologueMs = 500L),
+        )
+
+        assertEquals(1000L, combined.talkMs)
+        assertEquals(5, combined.turns)
+        assertEquals(500L, combined.longestMonologueMs)
+    }
+
+    @Test
+    fun combineSpeakerStatsKeepsTargetLongestMonologueWhenItIsLarger() {
+        val combined = combineSpeakerStats(
+            target = SpeakerStatValues(talkMs = 100L, turns = 1, longestMonologueMs = 900L),
+            source = SpeakerStatValues(talkMs = 100L, turns = 1, longestMonologueMs = 300L),
+        )
+
+        assertEquals(900L, combined.longestMonologueMs)
+    }
 }
