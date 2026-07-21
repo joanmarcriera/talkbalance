@@ -48,8 +48,10 @@ class TalkBalanceApplication : Application() {
      * Each store is deleted independently and its outcome checked, so the caller (Settings UI) can
      * report the truth instead of assuming success:
      * - Room deletes run in **one transaction** so the DB is never left half-cleared, followed by a
-     *   `wal_checkpoint(TRUNCATE)` so deleted rows don't linger in the WAL / free pages — needed to
-     *   substantiate the "permanently delete" wording.
+     *   `wal_checkpoint(TRUNCATE)` to fold the write-ahead log back into the main DB file. Note this
+     *   does NOT scrub already-freed pages from the main database (there is no `VACUUM` or
+     *   crypto-erase), so the UI copy is the honest "removes all Talk Balance data from the app",
+     *   not a secure/forensic-erasure claim.
      * - Every file must actually be gone; a failed `deleteRecursively()` is reported, not swallowed.
      */
     suspend fun deleteAllData(): DeleteAllResult {

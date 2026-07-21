@@ -49,25 +49,60 @@ class AudioCaptureShutdownTest {
         assertTrue("frame source must be released on shutdown", source.closed.get())
     }
 
-    @Test fun openFailureIsSurfacedAsAnErrorEventAndThreadExits() {
-        val capture = AudioCapture(
-            sampleRate = 16_000,
-            chunkSamples = 100,
-            channelCapacity = 8,
-            frameSourceFactory = {
-                object : FrameSource {
-                    override fun open(): String? = "mic unavailable"
-                    override fun read(out: ShortArray): Int = 0
-                    override fun close() {}
-                }
-            },
-        )
-        capture.start()
-        Thread.sleep(50) // let the capture thread run open(), surface the error, and exit
+    /** A [FrameSource] whose open() fails a chosen way; records whether close() was called. */
+    private class FailingOpenSource(private val mode: Mode) : FrameSource {
+        enum class Mode { RETURNS_ERROR, THROWS }
+        val closed = AtomicBoolean(false)
+        override fun open(): String? = when (mode) {
+            Mode.RETURNS_ERROR -> "mic unavailable"
+            Mode.THROWS -> throw IllegalStateException("boom in open")
+        }
+        override fun read(out: ShortArray): Int = 0
+        override fun close() {
+            closed.set(true)
+        }
+    }
 
-        // Drain the buffered events before closing the channel, so the error isn't raced away.
+    /** Waits (bounded) for the capture thread to exit; fails loudly instead of hanging on a wedge. */
+    private fun awaitStopped(capture: AudioCapture) {
+        val deadline = System.currentTimeMillis() + 2_000
+        while (capture.isRunning && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertFalse("capture thread must exit when open() fails", capture.isRunning)
+    }
+
+    @Test fun openReturningErrorSurfacesItAndStillReleasesTheSource() {
+        // open() fails AFTER (conceptually) allocating: the thread must both surface the error AND
+        // run source.close() on the way out — the leak the old code missed.
+        val source = FailingOpenSource(FailingOpenSource.Mode.RETURNS_ERROR)
+        val capture = AudioCapture(16_000, 100, 8, { source })
+
+        capture.start()
+        awaitStopped(capture)
+
         val events = generateSequence { capture.events.tryReceive().getOrNull() }.toList()
         assertTrue(events.any { it is AudioEvent.Error && (it as AudioEvent.Error).message.contains("mic unavailable") })
+        assertTrue("source must be closed even when open() returns an error", source.closed.get())
+        // Channel must be terminally closed so a consumer on receive() can't hang.
+        assertTrue("event channel must be closed after open failure", capture.events.tryReceive().isClosed)
+
+        capture.stop()
+        assertFalse(capture.isRunning)
+    }
+
+    @Test fun openThrowingDoesNotHangSurfacesErrorAndReleasesTheSource() {
+        // A throwing open() previously killed the capture thread silently: no error reached the
+        // consumer and events.receive() could hang forever. Now it must surface an error, close the
+        // source, and terminally close the channel.
+        val source = FailingOpenSource(FailingOpenSource.Mode.THROWS)
+        val capture = AudioCapture(16_000, 100, 8, { source })
+
+        capture.start()
+        awaitStopped(capture)
+
+        val events = generateSequence { capture.events.tryReceive().getOrNull() }.toList()
+        assertTrue(events.any { it is AudioEvent.Error && (it as AudioEvent.Error).message.contains("boom", ignoreCase = true) })
+        assertTrue("source must be closed even when open() throws", source.closed.get())
+        assertTrue("event channel must be closed so a receive() never hangs", capture.events.tryReceive().isClosed)
 
         capture.stop()
         assertFalse(capture.isRunning)

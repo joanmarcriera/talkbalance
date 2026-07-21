@@ -62,6 +62,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import uk.co.riera.talkbalance.BuildConfig
@@ -428,6 +429,20 @@ private fun EnrollScreen(modifier: Modifier = Modifier, nonce: Int, onDone: () -
     )
     val state by vm.state.collectAsStateWithLifecycle()
 
+    // Foreground-only guarantee (see [abortOnStopObserver]): leaving the app mid-enrollment (Home,
+    // Recents/app-switch, screen lock) reaches ON_STOP; Back/opening Settings disposes the screen.
+    // Both must abort the still-running record + processing so the mic is released and — critically —
+    // no PersonEntity is inserted after the user has left (which would race Delete-all).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = abortOnStopObserver { vm.abort() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            vm.abort()
+        }
+    }
+
     var name by remember { mutableStateOf("") }
     var colorIndex by remember { mutableStateOf(0) }
     var permissionDenied by remember { mutableStateOf(false) }
@@ -583,10 +598,12 @@ private fun SessionScreen(
         ),
     )
 
-    // Keep the screen awake for the whole session.
+    // Keep the screen awake for the session only when the user has asked us to (Settings →
+    // "Keep screen on"). Honour the live setting rather than hard-forcing it on.
     val view = LocalView.current
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        view.keepScreenOn = true
+    val keepScreenOn by app.settingsRepository.keepScreenOn.collectAsStateWithLifecycle(initialValue = true)
+    androidx.compose.runtime.DisposableEffect(keepScreenOn) {
+        view.keepScreenOn = keepScreenOn
         onDispose { view.keepScreenOn = false }
     }
 
@@ -594,11 +611,20 @@ private fun SessionScreen(
     val live by vm.live.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
 
-    // Foreground-only guarantee: leaving this screen while still live (back, Activity recreation)
-    // must never leave an invisible microphone running. A normally-finished session already
-    // stopped capture, so keep its controller alive for the report's save-retry.
-    androidx.compose.runtime.DisposableEffect(Unit) {
+    // Foreground-only guarantee (this release has no foreground service — see [abortOnStopObserver]).
+    // The real "app is no longer in the foreground" signal is the Activity lifecycle reaching
+    // ON_STOP (Home, Recents/app-switch, screen lock, Back/finish); composable disposal alone does
+    // NOT fire on Home/app-switch, so we must observe the lifecycle to release the microphone.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = abortOnStopObserver {
+            if (vm.phase.value !is SessionViewModel.Phase.Finished) vm.abort()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            // Also abort on ordinary disposal (Back / Activity recreation) unless the session
+            // finished normally (its controller is kept alive for the report's save-retry).
             if (vm.phase.value !is SessionViewModel.Phase.Finished) vm.abort()
         }
     }

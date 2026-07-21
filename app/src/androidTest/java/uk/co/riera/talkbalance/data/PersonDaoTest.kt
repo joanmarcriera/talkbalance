@@ -238,4 +238,76 @@ class PersonDaoTest {
 
         assertEquals(1, EmbeddingCodec.decode(dao.getById(targetId)!!.embeddings).size)
     }
+
+    @Test
+    fun mergePersonsConsolidatesDualRowsInTheSameSession() = runBlocking {
+        // Both people appeared in ONE historical session (each has a speaker_stats row for it).
+        val sourceId = dao.insert(person("Kid (dup)", arrayOf(floatArrayOf(1f))))
+        val targetId = dao.insert(person("Kid", arrayOf(floatArrayOf(2f))))
+
+        val session = SessionEntity(
+            startedAtEpochMs = 1000L,
+            endedAtEpochMs = 2000L,
+            mode = "table",
+            durationMs = 1000L,
+        )
+        sessionDao.insertSessionWithStats(
+            session,
+            listOf(
+                SpeakerStatEntity(
+                    sessionId = 0,
+                    personId = targetId,
+                    isEveryoneElse = false,
+                    talkMs = 400L,
+                    turns = 3,
+                    longestMonologueMs = 250L,
+                ),
+                SpeakerStatEntity(
+                    sessionId = 0,
+                    personId = sourceId,
+                    isEveryoneElse = false,
+                    talkMs = 600L,
+                    turns = 2,
+                    longestMonologueMs = 500L,
+                ),
+            ),
+        )
+
+        dao.mergePersons(sourceId = sourceId, targetId = targetId)
+
+        val sessions = sessionDao.observeSessionsNewestFirst().first()
+        val withStats = sessionDao.getSessionWithStats(sessions[0].id)
+
+        // The two rows collapse into ONE combined target row, not two.
+        assertEquals(1, withStats?.stats?.size)
+        val row = withStats!!.stats.first()
+        assertEquals(targetId, row.personId)
+        assertEquals(1000L, row.talkMs) // 400 + 600
+        assertEquals(5, row.turns) // 3 + 2
+        assertEquals(500L, row.longestMonologueMs) // max(250, 500)
+        assertNull(dao.getById(sourceId))
+    }
+
+    @Test
+    fun mergePersonsAcrossDifferentSessionsKeepsBothRows() = runBlocking {
+        // Source and target each appear in a DIFFERENT session: nothing to combine, both survive
+        // under the target after the merge (one repointed row per session).
+        val sourceId = dao.insert(person("Dup", arrayOf(floatArrayOf(1f))))
+        val targetId = dao.insert(person("Main", arrayOf(floatArrayOf(2f))))
+
+        sessionDao.insertSessionWithStats(
+            SessionEntity(startedAtEpochMs = 1000L, endedAtEpochMs = 2000L, mode = "table", durationMs = 1000L),
+            listOf(SpeakerStatEntity(sessionId = 0, personId = targetId, isEveryoneElse = false, talkMs = 100L, turns = 1, longestMonologueMs = 100L)),
+        )
+        sessionDao.insertSessionWithStats(
+            SessionEntity(startedAtEpochMs = 3000L, endedAtEpochMs = 4000L, mode = "table", durationMs = 1000L),
+            listOf(SpeakerStatEntity(sessionId = 0, personId = sourceId, isEveryoneElse = false, talkMs = 200L, turns = 2, longestMonologueMs = 150L)),
+        )
+
+        dao.mergePersons(sourceId = sourceId, targetId = targetId)
+
+        val allStats = dao.statsForPerson(targetId)
+        assertEquals(2, allStats.size) // one per session, both now under the target
+        assertNull(dao.getById(sourceId))
+    }
 }

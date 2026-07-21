@@ -26,3 +26,22 @@ fun combineEmbeddings(
     val combined = target + source
     return if (combined.size <= cap) combined else combined.copyOfRange(0, cap)
 }
+
+/**
+ * The three aggregatable per-session speaker metrics, extracted so the "two rows for the same person
+ * in one session" consolidation done during [PersonDao.mergePersons] is pure and plain-JUnit
+ * testable (no Room row types).
+ */
+data class SpeakerStatValues(val talkMs: Long, val turns: Int, val longestMonologueMs: Long)
+
+/**
+ * Combine two `speaker_stats` rows that, after a person merge, both belong to the surviving person in
+ * the SAME session. Talk time and turns add up; the longest monologue is the max of the two (it's a
+ * single continuous stretch, not something you can sum). Used to collapse the two rows into one so a
+ * session never shows the merged person twice.
+ */
+fun combineSpeakerStats(target: SpeakerStatValues, source: SpeakerStatValues) = SpeakerStatValues(
+    talkMs = target.talkMs + source.talkMs,
+    turns = target.turns + source.turns,
+    longestMonologueMs = maxOf(target.longestMonologueMs, source.longestMonologueMs),
+)
