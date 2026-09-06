@@ -1,0 +1,1 @@
+07-20 21:00:42.479 12510 12510 I adbd    : adbd service requested 'shell,v2:export ANDROID_LOG_TAGS=''; exec logcat '-d' '-s' 'BenchT3''

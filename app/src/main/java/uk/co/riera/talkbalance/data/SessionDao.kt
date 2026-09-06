@@ -1,0 +1,85 @@
+package uk.co.riera.talkbalance.data
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.Query
+import androidx.room.Transaction
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface SessionDao {
+    @Transaction
+    suspend fun insertSessionWithStats(
+        session: SessionEntity,
+        stats: List<SpeakerStatEntity>,
+    ): Long {
+        val sessionId = insertSession(session)
+        for (stat in stats) {
+            insertStat(stat.copy(sessionId = sessionId))
+        }
+        return sessionId
+    }
+
+    /**
+     * Replaces a previously saved session with a fresh one atomically, returning the new id.
+     * The delete and the insert must share one transaction: done separately, an insert that fails
+     * after the delete has already committed destroys an already-saved session (a speaker rename
+     * would lose the report it was renaming). [previousId] is null on a first save.
+     */
+    @Transaction
+    suspend fun replaceSessionWithStats(
+        previousId: Long?,
+        session: SessionEntity,
+        stats: List<SpeakerStatEntity>,
+    ): Long {
+        previousId?.let { deleteSession(it) }
+        return insertSessionWithStats(session, stats)
+    }
+
+    /** Deletes one session by id (its speaker_stats cascade). Used to re-save after a label edit. */
+    @Query("DELETE FROM sessions WHERE id = :id")
+    suspend fun deleteSession(id: Long)
+
+    @Insert
+    suspend fun insertSession(session: SessionEntity): Long
+
+    @Insert
+    suspend fun insertStat(stat: SpeakerStatEntity): Long
+
+    @Query("SELECT * FROM sessions ORDER BY startedAtEpochMs DESC")
+    fun observeSessionsNewestFirst(): Flow<List<SessionEntity>>
+
+    /**
+     * Every saved session with its speaker rows, newest first — the history screen's single source.
+     * Stats come along with the session because the list itself shows who led each conversation, so
+     * fetching them per row would mean an N+1 query behind a scrolling list.
+     */
+    @Transaction
+    @Query("SELECT * FROM sessions ORDER BY startedAtEpochMs DESC")
+    fun observeSessionsWithStatsNewestFirst(): Flow<List<SessionWithStats>>
+
+    @Transaction
+    @Query("SELECT * FROM sessions WHERE id = :id")
+    suspend fun getSessionWithStats(id: Long): SessionWithStats?
+
+    @Query("DELETE FROM sessions")
+    suspend fun deleteAllSessions()
+
+    @Query("DELETE FROM speaker_stats")
+    suspend fun deleteAllStats()
+
+    /**
+     * Deletes every persons/sessions/speaker_stats row in a single transaction, so a "delete all
+     * data" wipe can never leave the DB half-cleared. `persons` is included here (rather than via
+     * [PersonDao]) so all three deletes share one atomic transaction.
+     */
+    @Transaction
+    suspend fun deleteAllPersonsSessionsStatsTx() {
+        deleteAllPersons()
+        deleteAllSessions()
+        deleteAllStats()
+    }
+
+    @Query("DELETE FROM persons")
+    suspend fun deleteAllPersons()
+}

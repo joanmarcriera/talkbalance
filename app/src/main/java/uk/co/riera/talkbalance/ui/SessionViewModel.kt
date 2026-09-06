@@ -1,0 +1,282 @@
+package uk.co.riera.talkbalance.ui
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import uk.co.riera.talkbalance.data.PersonDao
+import uk.co.riera.talkbalance.data.SessionDao
+import uk.co.riera.talkbalance.ml.EngineBusyException
+import uk.co.riera.talkbalance.ml.SherpaEngines
+import uk.co.riera.talkbalance.ml.SherpaSpeakerMatcher
+import uk.co.riera.talkbalance.session.DiscoveredSpeakerLabels
+import uk.co.riera.talkbalance.session.Mode
+import uk.co.riera.talkbalance.session.PersistState
+import uk.co.riera.talkbalance.session.SessionController
+import uk.co.riera.talkbalance.session.SessionResult
+import uk.co.riera.talkbalance.session.SessionUiState
+import uk.co.riera.talkbalance.settings.SettingsRepository
+
+/**
+ * Owns one live session for the UI: builds a [SessionController] (in-memory pipeline), surfaces its
+ * live [uiState], and on stop keeps the finished [SessionResult] for the report screen. Never
+ * touches disk for audio.
+ */
+class SessionViewModel(
+    private val engines: SherpaEngines,
+    private val personDao: PersonDao,
+    private val sessionDao: SessionDao,
+    private val settings: SettingsRepository,
+) : ViewModel() {
+
+    sealed interface Phase {
+        /** Building the matcher / not yet capturing. */
+        data object Starting : Phase
+
+        /** Capturing live. */
+        data object Running : Phase
+
+        /** Stopped; [result] ready for the report. */
+        data class Finished(val result: SessionResult) : Phase
+
+        /** Could not start (e.g. no enrolled people, engine not ready). */
+        data class Failed(val message: String) : Phase
+    }
+
+    /** Display name + palette index for one speaker id the engine uses. */
+    data class SpeakerMeta(val name: String, val colorIndex: Int)
+
+    private var controller: SessionController? = null
+    private var mode: Mode = Mode.DISCOVER
+
+    /**
+     * Set by [abort]; latched so a teardown that lands while [start] is still suspended (reading
+     * settings/people, building the matcher in [SessionController.create]) can never go on to open
+     * the microphone afterwards. [controller] is still null at those points, so [abort]'s
+     * `controller?.close()` alone is a no-op and capture would begin *after* the app left the
+     * foreground — the exact foreground-only guarantee this release depends on. Mirrors the latch
+     * EnrollViewModel already uses. Never reset: the screen keys a fresh ViewModel per session
+     * nonce, so an aborted instance is finished for good.
+     */
+    private val aborted = AtomicBoolean(false)
+
+    /** The [start] coroutine, tracked so [abort] can cancel a start that is still suspended. */
+    private var startJob: Job? = null
+
+    /**
+     * speakerId (as the engine uses it: person `id.toString()` in Table, `"me"` in Me) -> its
+     * name + colour, so the live bars and the report can paint each speaker in their enrolled
+     * colour. The everyone-else bucket is absent (painted grey by the UI). For Discover mode this is
+     * empty (labels are dynamic — see [displayMeta]).
+     */
+    var metaBySpeakerId: Map<String, SpeakerMeta> = emptyMap()
+        private set
+
+    // Discover mode's live labelling state: first-seen speaker order + user renames.
+    private var discoverOrder: List<String> = emptyList()
+    private val _renames = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Reactive speakerId -> [SpeakerMeta] for the live bars, graphs and report. Static for enrolled
+     * modes; for Discover it updates as new voices are discovered ("Speaker N") and as the user
+     * renames them. Both the session screen and the report observe this so a rename repaints instantly.
+     */
+    private val _displayMeta = MutableStateFlow<Map<String, SpeakerMeta>>(emptyMap())
+    val displayMeta: StateFlow<Map<String, SpeakerMeta>> = _displayMeta.asStateFlow()
+
+    private val _phase = MutableStateFlow<Phase>(Phase.Starting)
+    val phase: StateFlow<Phase> = _phase.asStateFlow()
+
+    private val _live = MutableStateFlow(SessionUiState.idle())
+    val live: StateFlow<SessionUiState> = _live.asStateFlow()
+
+    /** Whether the pipeline reported an unrecoverable capture error (mic stolen, etc.). */
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** Whether the finished session was saved to Room; drives the report's saved/retry affordance. */
+    private val _persistState = MutableStateFlow<PersistState>(PersistState.Saving)
+    val persistState: StateFlow<PersistState> = _persistState.asStateFlow()
+
+    /** Start a session in [mode]. [mePersonId] required for Me mode. Call once per instance. */
+    fun start(mode: Mode, mePersonId: Long?) {
+        if (controller != null || aborted.get()) return
+        this.mode = mode
+        startJob = viewModelScope.launch {
+            try {
+                if (!engines.isInitialized) {
+                    _phase.value = Phase.Failed("Speech engine is still starting — try again in a moment.")
+                    return@launch
+                }
+                val threshold = settings.matchThreshold.first()
+                val people = personDao.observeAll().first()
+                metaBySpeakerId = when (mode) {
+                    Mode.TABLE -> people.associate {
+                        it.id.toString() to SpeakerMeta(it.name, it.colorIndex)
+                    }
+                    Mode.ME -> people.firstOrNull { it.id == mePersonId }?.let {
+                        mapOf(SherpaSpeakerMatcher.ME_ID to SpeakerMeta(it.name, it.colorIndex))
+                    } ?: emptyMap()
+                    Mode.DISCOVER -> emptyMap() // labels are dynamic (Speaker N + renames).
+                }
+                _displayMeta.value = metaBySpeakerId
+                val c = SessionController.create(
+                    engines = engines,
+                    personDao = personDao,
+                    sessionDao = sessionDao,
+                    mode = mode,
+                    threshold = threshold,
+                    mePersonId = mePersonId,
+                )
+                // A teardown can land while create() above was suspended; `controller` was still
+                // null then, so abort()'s close() did nothing. Release what we just built rather
+                // than publishing it.
+                if (aborted.get()) {
+                    c.close()
+                    return@launch
+                }
+                controller = c
+                // Relay the controller's flows into our own so the UI subscribes once.
+                viewModelScope.launch {
+                    c.uiState.collect {
+                        _live.value = it
+                        if (mode == Mode.DISCOVER) onDiscoverState(it)
+                    }
+                }
+                viewModelScope.launch { c.error.collect { if (it != null) _error.value = it } }
+                viewModelScope.launch { c.persistState.collect { _persistState.value = it } }
+                if (aborted.get()) {
+                    c.close()
+                    return@launch
+                }
+                c.start()
+                // start() suspends too: an abort during it already closed the controller, so do not
+                // then advertise the session as Running.
+                if (aborted.get()) {
+                    c.close()
+                    return@launch
+                }
+                _phase.value = Phase.Running
+            } catch (e: EngineBusyException) {
+                _phase.value = Phase.Failed("The speech engine is busy — finish adding a person first.")
+            } catch (e: CancellationException) {
+                // abort() cancelled this start; it already set the phase. Rethrowing keeps
+                // structured concurrency intact and stops the generic handler below from
+                // overwriting that phase with the cancellation's internal message.
+                throw e
+            } catch (e: Throwable) {
+                _phase.value = Phase.Failed(e.message ?: "Could not start the session.")
+            }
+        }
+    }
+
+    /**
+     * Fold a live Discover state into the first-seen order (from the segment timeline, oldest first)
+     * and refresh the dynamic labels. Called on every live update while in Discover mode.
+     */
+    private fun onDiscoverState(state: SessionUiState) {
+        val seen = state.segments.map { it.speakerId }.distinct()
+        val merged = DiscoveredSpeakerLabels.mergeOrder(discoverOrder, seen)
+        if (merged != discoverOrder) {
+            discoverOrder = merged
+            recomputeDiscoverMeta()
+        }
+    }
+
+    /**
+     * Rename a discovered speaker (Discover mode only). Applies immediately to the live bars, the
+     * timeline and the report via [displayMeta]; a blank name clears back to the "Speaker N" default.
+     * When the session has already finished, re-saves so the new name persists in the report record.
+     */
+    fun rename(speakerId: String, newName: String) {
+        if (mode != Mode.DISCOVER) return
+        val trimmed = newName.trim()
+        _renames.value = if (trimmed.isEmpty()) {
+            _renames.value - speakerId
+        } else {
+            _renames.value + (speakerId to trimmed)
+        }
+        recomputeDiscoverMeta()
+        if (_phase.value is Phase.Finished) controller?.resaveWithCurrentLabels()
+    }
+
+    /** Rebuild the Discover display meta + push the final labels to the controller for persistence. */
+    private fun recomputeDiscoverMeta() {
+        val labels = DiscoveredSpeakerLabels(discoverOrder, _renames.value)
+        _displayMeta.value = discoverOrder.associateWith { id ->
+            SpeakerMeta(labels.label(id), labels.colorIndex(id))
+        }
+        controller?.speakerLabels = discoverOrder.associateWith { labels.label(it) }
+    }
+
+    /** Stop the session; transitions to [Phase.Finished] with the persisted result. */
+    fun stop() {
+        val c = controller ?: return
+        viewModelScope.launch {
+            // SessionController.stop() finalises the engine and persists, and is documented to
+            // rethrow. Uncaught here it would escape viewModelScope and crash the app at the very
+            // moment the user asked to finish; show the failure instead.
+            val result = try {
+                c.stop()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _phase.value = Phase.Failed(e.message ?: "Couldn't finish the session.")
+                return@launch
+            }
+            _phase.value = Phase.Finished(result)
+        }
+    }
+
+    /** Retry saving the finished session (report's "couldn't save — retry" action). */
+    fun retryPersist() {
+        controller?.retryPersist()
+    }
+
+    /**
+     * Hard-stop the underlying session (cancels capture + pipeline, releases the engine lease).
+     * Called from the session screen's dispose path so leaving the screen never leaves the mic on.
+     */
+    fun abort() {
+        aborted.set(true)
+        startJob?.cancel()
+        startJob = null
+        controller?.close()
+        // Leave Running behind. The capture is dead, but the screen drove its clock, its
+        // "Listening..." copy and the enabled Stop button off Phase.Running, so without this an
+        // ON_STOP abort left the session visibly measuring nothing — and the wall-clock duration
+        // kept counting the dead period. Finished sessions keep their result for the report.
+        if (_phase.value !is Phase.Finished) {
+            _phase.value = Phase.Failed("Session stopped when the app left the foreground.")
+        }
+    }
+
+    /**
+     * Foreground-only guarantee: when the ViewModel is cleared (screen left, back, Activity
+     * recreation, process teardown), abort the controller so no invisible microphone survives.
+     */
+    override fun onCleared() {
+        controller?.close()
+        super.onCleared()
+    }
+
+    companion object {
+        fun factory(
+            engines: SherpaEngines,
+            personDao: PersonDao,
+            sessionDao: SessionDao,
+            settings: SettingsRepository,
+        ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                SessionViewModel(engines, personDao, sessionDao, settings) as T
+        }
+    }
+}

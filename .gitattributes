@@ -1,0 +1,2 @@
+app/libs/*.aar binary
+app/src/main/assets/*.onnx binary

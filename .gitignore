@@ -1,0 +1,17 @@
+.gradle/
+.idea/
+build/
+**/build/
+local.properties
+*.iml
+*.jks
+*.keystore
+outputs/*.apk
+spike/.venv/
+spike/*.onnx
+spike/*.wav
+spike/*.tar.bz2
+spike/sherpa-onnx-pyannote-segmentation-3-0/
+.claude/
+.kotlin/
+.dev/
