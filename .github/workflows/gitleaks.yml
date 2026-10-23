@@ -1,9 +1,20 @@
 name: gitleaks
 
+# Secret-scanning gate. Runs on both GitHub Actions and Forgejo Actions.
+# Uses a pinned, checksum-verified gitleaks binary instead of gitleaks-action@v2:
+# the action needs GitHub-only context (GITHUB_TOKEN API calls) and failed on the
+# Forgejo runner on every run. Reviewed false positives go in .gitleaksignore.
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 
 jobs:
   gitleaks:
@@ -12,5 +23,12 @@ jobs:
       # full history: gitleaks scans commit ranges and fails on a shallow clone
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
-      - uses: gitleaks/gitleaks-action@v2
-        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+      - name: Install gitleaks (pinned + sha256-verified)
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tgz" "$url"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan full history
+        run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 1 --verbose .'
